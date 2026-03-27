@@ -24,7 +24,7 @@
       "allowSubInvocation": true
     },
     "implementer": {
-      "cli": "codex",
+      "cli": "claude",
       "specialty": "code generation and refactoring",
       "canReview": true,
       "canRevise": true,

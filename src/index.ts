@@ -127,7 +127,7 @@ async function main(): Promise<void> {
         checkpoint,
         coordinatorUrl: `http://${config.host}:${config.port}/sse`,
         ...(config.authTokenEnvVar && process.env[config.authTokenEnvVar]
-          ? { coordinatorAuthToken: process.env[config.authTokenEnvVar] }
+          ? { coordinatorAuthToken: process.env[config.authTokenEnvVar]! }
           : {}),
         persistSpawnStats: async (stats) => {
           await session.update({ spawnStats: stats });

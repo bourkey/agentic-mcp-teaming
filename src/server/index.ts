@@ -63,7 +63,7 @@ export function createCoordinatorServer(opts: CoordinatorServerOptions): McpServ
       phase: state.currentPhase,
       checkpoint,
       coordinatorUrl: `http://${config.host}:${config.port}/sse`,
-      ...(getConfiguredAuthToken(config) ? { coordinatorAuthToken: getConfiguredAuthToken(config) } : {}),
+      ...(getConfiguredAuthToken(config) ? { coordinatorAuthToken: getConfiguredAuthToken(config)! } : {}),
       persistSpawnStats: async (stats) => {
         await session.update({ spawnStats: stats });
       },
