@@ -11,7 +11,7 @@
       "outFiles": [
         "${workspaceFolder}/vscode-extension/dist/**/*.js"
       ],
-      "preLaunchTask": "npm: build -vscode-extension"
+      "preLaunchTask": "build-extension"
     }
   ]
 }
