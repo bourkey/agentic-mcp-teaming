@@ -1,0 +1,7 @@
+node_modules/
+vscode-extension/node_modules/
+dist/
+vscode-extension/dist/
+*.vsix
+.env
+sessions/
