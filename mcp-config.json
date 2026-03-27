@@ -1,0 +1,43 @@
+{
+  "port": 3100,
+  "host": "127.0.0.1",
+  "rootDir": ".",
+  "toolAllowlist": [
+    "read_file",
+    "write_file",
+    "grep",
+    "glob",
+    "invoke_agent",
+    "submit_for_consensus",
+    "advance_phase",
+    "get_session_state",
+    "resolve_checkpoint"
+  ],
+  "authTokenEnvVar": "COORDINATOR_AUTH_TOKEN",
+  "agents": {
+    "architect": {
+      "cli": "claude",
+      "specialty": "system design and architecture",
+      "canReview": true,
+      "canRevise": true,
+      "canImplement": false,
+      "allowSubInvocation": true
+    },
+    "implementer": {
+      "cli": "codex",
+      "specialty": "code generation and refactoring",
+      "canReview": true,
+      "canRevise": true,
+      "canImplement": true,
+      "allowSubInvocation": true
+    }
+  },
+  "consensus": {
+    "maxRounds": 3
+  },
+  "spawning": {
+    "maxDepth": 2,
+    "maxConcurrentSubInvocations": 5,
+    "maxSessionInvocations": 50
+  }
+}

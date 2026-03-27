@@ -1,0 +1,94 @@
+{
+  "name": "agentic-mcp-coordinator",
+  "displayName": "Agentic MCP Coordinator",
+  "description": "Live view of the agentic MCP teaming coordinator — conversation, phase status, checkpoints, and audit log",
+  "version": "0.1.0",
+  "publisher": "agentic-mcp",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "main": "./dist/extension.js",
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "coordinator.start",
+        "title": "Coordinator: Start",
+        "category": "Coordinator"
+      },
+      {
+        "command": "coordinator.resume",
+        "title": "Coordinator: Resume Session",
+        "category": "Coordinator"
+      },
+      {
+        "command": "coordinator.stop",
+        "title": "Coordinator: Stop",
+        "category": "Coordinator"
+      },
+      {
+        "command": "coordinator.switchSession",
+        "title": "Coordinator: Switch Session",
+        "category": "Coordinator"
+      },
+      {
+        "command": "coordinator.openConversation",
+        "title": "Coordinator: Open Conversation",
+        "category": "Coordinator",
+        "icon": "$(comment-discussion)"
+      },
+      {
+        "command": "coordinator.filterAuditLog",
+        "title": "Coordinator: Filter Audit Log",
+        "category": "Coordinator"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "coordinator",
+          "title": "Coordinator",
+          "icon": "$(organization)"
+        }
+      ]
+    },
+    "views": {
+      "coordinator": [
+        {
+          "id": "coordinatorSession",
+          "name": "Session",
+          "when": "true"
+        }
+      ]
+    },
+    "viewsWelcome": [
+      {
+        "view": "coordinatorSession",
+        "contents": "No active session.\n[Start Coordinator](command:coordinator.start)\n[Resume Session](command:coordinator.resume)"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "coordinator.openConversation",
+          "when": "view == coordinatorSession",
+          "group": "navigation"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "build": "node build.js",
+    "vscode:prepublish": "node build.js --minify",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "@types/vscode": "^1.85.0",
+    "esbuild": "^0.24.0",
+    "typescript": "^5.7.0",
+    "vitest": "^2.1.0"
+  }
+}
