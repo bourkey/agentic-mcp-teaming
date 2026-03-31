@@ -6,6 +6,7 @@ import { AuditLogger } from "../../core/audit.js";
 import { AgentRegistry } from "../../core/registry.js";
 import { SpawnTracker } from "../../core/spawn-tracker.js";
 import { HumanCheckpoint } from "../../core/checkpoint.js";
+import type { ReviewerConfig } from "../../config.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -215,4 +216,99 @@ export function makeMockAgentTool(agentId: string, action: AgentMessage["action"
     artifactId: params.artifactId,
     round: params.round,
   });
+}
+
+export interface ReviewerFinding {
+  finding: string;
+  severity: "critical" | "major" | "minor";
+  proposedFix: string;
+  location: string;
+}
+
+export interface ReviewerFindings {
+  reviewerId: string;
+  findings: ReviewerFinding[];
+  timedOut?: boolean;
+}
+
+export interface ReviewerInvokeParams {
+  reviewerId: string;
+  reviewer: ReviewerConfig;
+  stage: "spec" | "code";
+  artifactContent: string;
+  timeoutMs?: number;
+}
+
+const REVIEWER_SYSTEM_PROMPT = `You are a code and specification reviewer.
+Respond ONLY with a JSON object matching this schema:
+{
+  "findings": [
+    {
+      "finding": "<description of the issue>",
+      "severity": "critical" | "major" | "minor",
+      "proposedFix": "<concrete fix or suggestion>",
+      "location": "<file path or artifact section the finding applies to>"
+    }
+  ]
+}
+
+Severity guidelines:
+- critical: security vulnerability, data loss risk, broken correctness guarantee, fundamental design flaw
+- major: design issue, interface problem, quality concern that affects maintainability or correctness
+- minor: style, naming, cosmetic, or low-impact issue
+
+Return an empty findings array if you find no issues.`;
+
+export async function invokeReviewerTool(params: ReviewerInvokeParams): Promise<ReviewerFindings> {
+  const { reviewerId, reviewer, stage, artifactContent, timeoutMs = 120_000 } = params;
+
+  const stageLabel = stage === "spec" ? "specification artifacts" : "implementation code";
+  const prompt = `${REVIEWER_SYSTEM_PROMPT}
+
+Your specialty: ${reviewer.specialty}
+
+Review the following ${stageLabel} and return your findings:
+
+---
+
+${artifactContent}`;
+
+  const cli = reviewer.cli!;
+  const args = cli === "claude" ? ["-p", prompt] : [prompt];
+
+  let stdout: string;
+  try {
+    ({ stdout } = await execFileAsync(cli, args, { timeout: timeoutMs }));
+  } catch (err: unknown) {
+    const ex = err as { code?: string; killed?: boolean };
+    if (ex.killed || ex.code === "ETIMEDOUT") {
+      return { reviewerId, findings: [], timedOut: true };
+    }
+    throw err;
+  }
+
+  let parsed: unknown;
+  try {
+    const jsonMatch = stdout.match(/```json\s*([\s\S]*?)\s*```/) ?? stdout.match(/(\{[\s\S]*\})/);
+    parsed = JSON.parse(jsonMatch ? jsonMatch[1]! : stdout);
+  } catch {
+    return { reviewerId, findings: [] };
+  }
+
+  const result = parsed as { findings?: unknown[] };
+  if (!Array.isArray(result.findings)) {
+    return { reviewerId, findings: [] };
+  }
+
+  const findings: ReviewerFinding[] = result.findings
+    .filter((f): f is Record<string, unknown> => typeof f === "object" && f !== null)
+    .map((f) => ({
+      finding: String(f["finding"] ?? ""),
+      severity: (["critical", "major", "minor"].includes(String(f["severity"])) ? f["severity"] : "minor") as ReviewerFinding["severity"],
+      proposedFix: String(f["proposedFix"] ?? ""),
+      location: String(f["location"] ?? ""),
+    }))
+    .filter((f) => f.finding.length > 0);
+
+  return { reviewerId, findings };
 }

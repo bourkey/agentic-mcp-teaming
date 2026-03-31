@@ -32,6 +32,57 @@
       "allowSubInvocation": true
     }
   },
+  "reviewers": {
+    "claude-security": {
+      "stage": ["spec", "code"],
+      "role": "security",
+      "specialty": "Security vulnerabilities, threat model gaps, auth/authz issues, injection risks, sensitive data exposure",
+      "optional": false
+    },
+    "claude-design": {
+      "stage": ["spec"],
+      "role": "design",
+      "specialty": "System design quality, architectural coherence, interface design, separation of concerns",
+      "optional": false
+    },
+    "claude-completeness": {
+      "stage": ["spec"],
+      "role": "completeness",
+      "specialty": "Requirement completeness, missing edge cases, undefined behaviour, gaps in spec coverage",
+      "optional": false
+    },
+    "claude-consistency": {
+      "stage": ["spec"],
+      "role": "consistency",
+      "specialty": "Internal consistency between proposal, design, and specs; conflicting requirements; terminology drift",
+      "optional": false
+    },
+    "claude-quality": {
+      "stage": ["code"],
+      "role": "quality",
+      "specialty": "Code quality, readability, maintainability, adherence to project conventions",
+      "optional": false
+    },
+    "claude-error-handling": {
+      "stage": ["code"],
+      "role": "error-handling",
+      "specialty": "Error handling completeness, failure modes, timeout handling, partial failure recovery",
+      "optional": false
+    },
+    "claude-test-coverage": {
+      "stage": ["code"],
+      "role": "test-coverage",
+      "specialty": "Test coverage gaps, missing edge case tests, untested error paths",
+      "optional": false
+    },
+    "codex-peer": {
+      "cli": "codex",
+      "stage": ["spec", "code"],
+      "role": "peer",
+      "specialty": "Cross-cutting peer review from an independent model perspective",
+      "optional": true
+    }
+  },
   "consensus": {
     "maxRounds": 3
   },

@@ -5,7 +5,7 @@ import { z } from "zod";
 import { randomUUID } from "crypto";
 import { McpConfig } from "../config.js";
 import { SharedToolsContext, readFileTool, writeFileTool, grepTool, globTool, bashTool } from "./tools/shared.js";
-import { AgentToolsContext, invokeAgentTool, makeMockAgentTool } from "./tools/agents.js";
+import { AgentToolsContext, invokeAgentTool, makeMockAgentTool, invokeReviewerTool } from "./tools/agents.js";
 import { WorkflowToolsContext, submitForConsensusTool, advancePhaseTool, getSessionStateTool, resolveCheckpointTool } from "./tools/workflow.js";
 import { AuditLogger } from "../core/audit.js";
 import { SessionManager } from "../core/session.js";
@@ -157,6 +157,44 @@ export function createCoordinatorServer(opts: CoordinatorServerOptions): McpServ
         : await invokeAgentTool(agentCtx, invokeParams);
 
       return { content: [{ type: "text", text: JSON.stringify(msg) }] };
+    }
+  );
+
+  // --- Reviewer trigger tool ---
+
+  server.tool(
+    "invoke_reviewer",
+    {
+      reviewerId: z.string().describe("Reviewer ID from the reviewers block in mcp-config.json"),
+      stage: z.enum(["spec", "code"]).describe("Which gate is running"),
+      artifactContent: z.string().describe("Full content of the artifacts to review"),
+    },
+    async (params) => {
+      const reviewer = config.reviewers[params.reviewerId];
+      if (!reviewer) {
+        return { content: [{ type: "text", text: JSON.stringify({ reviewerId: params.reviewerId, findings: [], error: `Reviewer '${params.reviewerId}' not found in config` }) }] };
+      }
+      if (!reviewer.cli) {
+        return { content: [{ type: "text", text: JSON.stringify({ reviewerId: params.reviewerId, findings: [], error: `Reviewer '${params.reviewerId}' has no cli — use the Agent tool for Claude sub-agents` }) }] };
+      }
+      if (!reviewer.stage.includes(params.stage)) {
+        return { content: [{ type: "text", text: JSON.stringify({ reviewerId: params.reviewerId, findings: [], error: `Reviewer '${params.reviewerId}' does not participate in the '${params.stage}' stage` }) }] };
+      }
+
+      const result = await invokeReviewerTool({
+        reviewerId: params.reviewerId,
+        reviewer,
+        stage: params.stage,
+        artifactContent: params.artifactContent,
+      });
+
+      if (result.timedOut) {
+        logger.log({ type: "tool_call", tool: "invoke_reviewer", params: { reviewerId: params.reviewerId, stage: params.stage }, sessionId: session.get().sessionId, resultLength: 0, warning: "timeout" });
+      } else {
+        logger.log({ type: "tool_call", tool: "invoke_reviewer", params: { reviewerId: params.reviewerId, stage: params.stage }, sessionId: session.get().sessionId, resultLength: result.findings.length });
+      }
+
+      return { content: [{ type: "text", text: JSON.stringify(result) }] };
     }
   );
 

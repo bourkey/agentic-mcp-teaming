@@ -10,6 +10,16 @@ const AgentEntry = z.object({
   allowSubInvocation: z.boolean().default(false),
 });
 
+const ReviewerEntry = z.object({
+  stage: z.array(z.enum(["spec", "code"])).min(1),
+  role: z.string(),
+  specialty: z.string(),
+  optional: z.boolean().default(false),
+  cli: z.string().optional(),
+});
+
+export type ReviewerConfig = z.infer<typeof ReviewerEntry>;
+
 const McpConfig = z.object({
   port: z.number().int().positive().default(3100),
   host: z.string().default("127.0.0.1"),
@@ -17,6 +27,7 @@ const McpConfig = z.object({
   toolAllowlist: z.array(z.string()),
   authTokenEnvVar: z.string().optional(),
   agents: z.record(z.string(), AgentEntry).default({}),
+  reviewers: z.record(z.string(), ReviewerEntry).default({}),
   consensus: z.object({
     maxRounds: z.number().int().positive().default(3),
   }).default({}),
@@ -31,5 +42,15 @@ export type McpConfig = z.infer<typeof McpConfig>;
 
 export function loadConfig(path = "mcp-config.json"): McpConfig {
   const raw = JSON.parse(readFileSync(path, "utf8")) as unknown;
-  return McpConfig.parse(raw);
+  const config = McpConfig.parse(raw);
+
+  for (const [id, reviewer] of Object.entries(config.reviewers)) {
+    if (!reviewer.optional && !reviewer.cli) {
+      if (!reviewer.role || !reviewer.specialty) {
+        throw new Error(`Reviewer '${id}' is required and non-CLI but missing 'role' or 'specialty'`);
+      }
+    }
+  }
+
+  return config;
 }

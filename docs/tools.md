@@ -110,7 +110,7 @@ Execute a shell command. Timeout: 30 seconds. `cwd` is set to `rootDir`. This to
 
 ## Agent trigger tools
 
-These tools invoke a registered AI agent and return a structured `AgentMessage`. All agent invocations in the workflow go exclusively through this tool.
+These tools invoke registered AI agents and external CLI reviewers. `invoke_agent` drives the core consensus workflow; `invoke_reviewer` dispatches an external CLI-based reviewer and parses its structured output.
 
 `AgentMessage` schema:
 ```json
@@ -169,6 +169,49 @@ Invoke a named agent from the registry with a prompt and return an `AgentMessage
   "snapshotContext": {
     "read_file:design.md": "## Context\n..."
   }
+}
+```
+
+---
+
+### `invoke_reviewer`
+
+Invoke an external CLI-based reviewer (e.g. `codex`) with a structured prompt and parse its JSON findings output. Unlike `invoke_agent`, this tool is intended for lightweight pass/fail reviewers that emit `ReviewerFindings` JSON rather than `AgentMessage` JSON. Only reviewers with a `cli` field in the `reviewers` block of `mcp-config.json` can be called through this tool.
+
+**Parameters**
+
+| Name | Type | Required | Description |
+|---|---|---|---|
+| `reviewerId` | string | Yes | Reviewer ID (must exist in `mcp-config.json → reviewers` and have a `cli` field) |
+| `stage` | `"spec"` \| `"code"` | Yes | Review stage; the reviewer must be configured for this stage |
+| `artifactContent` | string | Yes | Content to review (artifact text or change description) |
+
+**Returns** `ReviewerFindings` JSON:
+```json
+{
+  "reviewerId": "codex-peer",
+  "findings": [
+    {
+      "finding": "Missing input validation",
+      "severity": "major",
+      "proposedFix": "Add Zod schema for request body",
+      "location": "src/server/index.ts:42"
+    }
+  ],
+  "timedOut": false
+}
+```
+
+If the reviewer process times out, `findings` is `[]` and `timedOut` is `true`. A warning is recorded in the audit log.
+
+**Errors** — Returns an error if `reviewerId` is not in the registry, the reviewer has no `cli` field, or the reviewer is not configured for the requested `stage`.
+
+**Example**
+```json
+{
+  "reviewerId": "codex-peer",
+  "stage": "code",
+  "artifactContent": "## Changes\nsrc/server/index.ts — added invoke_reviewer handler\n..."
 }
 ```
 

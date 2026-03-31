@@ -45,14 +45,24 @@ Implement tasks from an OpenSpec change.
    - If `state: "all_done"`: congratulate, suggest archive
    - Otherwise: proceed to implementation
 
-4. **Read context files**
+4. **Check for spec review gate (warn if missing)**
+
+   Check if `openspec/changes/<name>/review-gate.lock` exists using the Read tool.
+
+   - If it **does not exist**: warn the user:
+     > "⚠ Spec review gate has not run for this change. It is recommended to run the spec review gate before applying. Proceeding anyway."
+   - If it **exists**: proceed silently.
+
+   Do NOT hard-block — this is a warning only.
+
+5. **Read context files**
 
    Read the files listed in `contextFiles` from the apply instructions output.
    The files depend on the schema being used:
    - **spec-driven**: proposal, specs, design, tasks
    - Other schemas: follow the contextFiles from CLI output
 
-5. **Show current progress**
+6. **Show current progress**
 
    Display:
    - Schema being used
@@ -60,7 +70,7 @@ Implement tasks from an OpenSpec change.
    - Remaining tasks overview
    - Dynamic instruction from CLI
 
-6. **Implement tasks (loop until done or blocked)**
+7. **Implement tasks (loop until done or blocked)**
 
    For each pending task:
    - Show which task is being worked on
@@ -75,7 +85,17 @@ Implement tasks from an OpenSpec change.
    - Error or blocker encountered → report and wait for guidance
    - User interrupts
 
-7. **On completion or pause, show status**
+8. **Run code review gate after all tasks complete**
+
+   When all tasks are marked complete, track the list of files that were modified during implementation. Then invoke the review gate using the **Skill tool**:
+   ```
+   skill: "run-review-gate"
+   args: "stage=code changeName=<name>"
+   ```
+
+   Pass the list of modified files as part of the context when invoking the gate (include them in the skill invocation prompt so the gate can read them).
+
+9. **On completion or pause, show status**
 
    Display:
    - Tasks completed this session

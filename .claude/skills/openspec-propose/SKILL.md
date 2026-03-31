@@ -79,18 +79,29 @@ When ready to implement, run /opsx:apply
       - Use **AskUserQuestion tool** to clarify
       - Then continue with creation
 
-5. **Show final status**
+5. **Run spec review gate**
+
+   After all artifacts are written, automatically invoke the review gate using the **Skill tool**:
+   ```
+   skill: "run-review-gate"
+   args: "stage=spec changeName=<name>"
+   ```
+
+   Wait for the gate to complete before showing the final summary. The gate will apply agreed fixes and escalate any contested findings.
+
+6. **Show final status**
    ```bash
    openspec status --change "<name>"
    ```
 
 **Output**
 
-After completing all artifacts, summarize:
+After completing all artifacts and the review gate, summarize:
 - Change name and location
 - List of artifacts created with brief descriptions
-- What's ready: "All artifacts created! Ready for implementation."
-- Prompt: "Run `/opsx:apply` or ask me to implement to start working on the tasks."
+- Review gate outcome (fixes applied, escalations if any)
+- What's ready: "All artifacts created and reviewed! Ready for implementation."
+- Prompt: "Run `/opsx:apply` to start implementing."
 
 **Artifact Creation Guidelines**
 

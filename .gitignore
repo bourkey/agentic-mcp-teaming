@@ -5,3 +5,30 @@ vscode-extension/dist/
 *.vsix
 .env
 sessions/
+
+# Build artifacts
+*.tsbuildinfo
+coverage/
+*.lcov
+.nyc_output/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+!.vscode/extensions.json
+.idea/
+*.swp
+*.swo
+*~
+
+# npm
+.npm/
+npm-debug.log*
+yarn-error.log
+
+# OpenSpec review artifacts (generated, not source)
+openspec/changes/*/review-summary.md
+openspec/changes/*/review-gate.lock

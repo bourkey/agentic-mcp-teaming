@@ -48,7 +48,7 @@ Edit `mcp-config.json` to configure the coordinator:
   "host": "127.0.0.1",
   "rootDir": ".",
   "toolAllowlist": ["read_file", "write_file", "grep", "glob",
-                    "invoke_agent",
+                    "invoke_agent", "invoke_reviewer",
                     "submit_for_consensus", "advance_phase",
                     "get_session_state", "resolve_checkpoint"],
   "authTokenEnvVar": "COORDINATOR_AUTH_TOKEN",
@@ -71,6 +71,25 @@ Edit `mcp-config.json` to configure the coordinator:
     "maxDepth": 2,
     "maxConcurrentSubInvocations": 5,
     "maxSessionInvocations": 50
+  },
+  "reviewers": {
+    "claude-security": {
+      "stage": ["spec", "code"],
+      "role": "security-reviewer",
+      "specialty": "Security vulnerabilities, injection risks, authentication, data exposure"
+    },
+    "claude-quality": {
+      "stage": ["code"],
+      "role": "quality-reviewer",
+      "specialty": "Code quality, error handling, maintainability"
+    },
+    "codex-peer": {
+      "stage": ["spec", "code"],
+      "role": "peer-reviewer",
+      "specialty": "General correctness and completeness",
+      "optional": true,
+      "cli": "codex"
+    }
   }
 }
 ```
@@ -87,6 +106,17 @@ Edit `mcp-config.json` to configure the coordinator:
 | `spawning.maxDepth` | Maximum agent call-tree depth; invocations deeper than this are rejected (default: 2) |
 | `spawning.maxConcurrentSubInvocations` | Maximum concurrent delegated agent invocations from a single agent turn (default: 5) |
 | `spawning.maxSessionInvocations` | Total invocation budget for the session; exhaustion escalates to a human checkpoint (default: 50) |
+| `reviewers` | Named reviewer registry for the review gate. Each entry requires `stage` (array of `"spec"` and/or `"code"`), `role`, and `specialty`. Reviewers with a `cli` field are invoked as external CLIs via `invoke_reviewer`; reviewers without `cli` are dispatched as Claude sub-agents. `optional: true` suppresses errors if the CLI is unavailable. |
+
+**Reviewer entry fields**
+
+| Field | Required | Description |
+|---|---|---|
+| `stage` | Yes | Array of stages this reviewer participates in: `"spec"`, `"code"`, or both |
+| `role` | Yes | Role label used in review prompts and the review summary |
+| `specialty` | Yes | Short description of what this reviewer focuses on |
+| `optional` | No | If `true`, unavailability of the CLI is reported as a warning rather than an error (default: `false`) |
+| `cli` | No | CLI command to use for external reviewer invocation. When absent, reviewer is dispatched as a Claude sub-agent |
 
 ### 3. Connect Claude to the coordinator (optional)
 
@@ -146,6 +176,23 @@ npm start -- status --session <session-id>
 
 At the boundary of each phase, the coordinator pauses for a human checkpoint. Respond `proceed` to advance or `abort` to halt.
 
+## Review gates
+
+Two automated review gates run at key points in the `/opsx:propose` and `/opsx:apply` workflows:
+
+| Gate | Trigger | Stage |
+|---|---|---|
+| Spec gate | After all OpenSpec artifacts are written by `/opsx:propose` | `spec` |
+| Code gate | After all tasks are marked complete by `/opsx:apply` | `code` |
+
+Each gate dispatches all configured reviewers in parallel — Claude sub-agents (no `cli` field) and external CLI reviewers (`cli` field) simultaneously. A synthesis agent deduplicates findings, detects conflicts, and assigns dispositions:
+
+- **`auto-apply`** — Critical uncontested, or major with ≥ 2 reviewer agreement: applied immediately
+- **`escalate`** — Critical contested, or major/minor with conflicting proposed fixes: surfaced to the user for a decision
+- **`drop`** — Minor with no consensus: silently dropped
+
+After the gate, `review-gate.lock` is written to the change directory and `review-summary.md` is appended with a findings table. `/opsx:apply` warns (but does not block) if `review-gate.lock` is absent when implementation begins.
+
 ## Session storage
 
 Each session creates a directory at `sessions/<session-id>/`:
@@ -170,3 +217,9 @@ See [docs/session-format.md](docs/session-format.md) for the full schema.
 **Agent timeout** — The default timeout is 120 seconds per agent invocation. For slow models, consider increasing `timeoutMs` in the coordinator source or breaking large tasks into smaller ones.
 
 **Stuck at a human checkpoint** — Type `proceed` to advance or `abort` to halt the workflow. If using `--dry-run`, checkpoints auto-proceed.
+
+**`Reviewer not found`** — The `reviewerId` passed to `invoke_reviewer` does not exist in `mcp-config.json → reviewers`, or the reviewer has no `cli` field. Only reviewers with a `cli` field can be invoked via `invoke_reviewer`.
+
+**`Reviewer not configured for stage`** — The reviewer's `stage` array does not include the requested stage. Check the `stage` field in `mcp-config.json → reviewers`.
+
+**Reviewer timeout warning** — A CLI reviewer did not respond within the timeout period. Its findings are recorded as empty. If it is non-optional, check that the CLI is installed and authenticated. Set `"optional": true` to suppress this as a warning.
