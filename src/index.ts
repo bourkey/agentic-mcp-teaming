@@ -1,8 +1,9 @@
+#!/usr/bin/env node
 import { Command } from "commander";
 import { execFile } from "child_process";
 import { promisify } from "util";
-import { access, mkdir } from "fs/promises";
-import { resolve, join } from "path";
+import { access } from "fs/promises";
+import { resolve } from "path";
 import { loadConfig } from "./config.js";
 import { SessionManager } from "./core/session.js";
 import { AuditLogger } from "./core/audit.js";
@@ -11,13 +12,8 @@ import { HumanCheckpoint } from "./core/checkpoint.js";
 import { ConsensusLoop } from "./core/consensus.js";
 import { AgentRegistry } from "./core/registry.js";
 import { SpawnTracker } from "./core/spawn-tracker.js";
-import { MessageStore } from "./core/message-store.js";
-import { SessionRegistry } from "./core/session-registry.js";
 import { consoleLogger } from "./core/logger.js";
-import {
-  acquireCoordinatorLock,
-  registerLockCleanupHandlers,
-} from "./core/coordinator-lock.js";
+import { bootstrapPeerBus } from "./core/peer-bus-bootstrap.js";
 import { AgentToolsContext } from "./server/tools/agents.js";
 import { createCoordinatorServer, startHttpServer, type PeerBusWiring } from "./server/index.js";
 import { runProposalPhase } from "./phases/proposal.js";
@@ -78,7 +74,7 @@ async function main(): Promise<void> {
 
   program
     .command("start")
-    .description("Run the full teaming workflow")
+    .description("Run the full teaming workflow (phase-driven; one-shot). For bus-only long-running operation see `serve`.")
     .option("--workflow <phase>", "Starting workflow phase", "proposal")
     .option("--session <id>", "Resume an existing session by ID")
     .option("--dry-run", "Use mock agents (no real CLI calls)")
@@ -155,39 +151,10 @@ async function main(): Promise<void> {
       let releaseCoordinatorLock: (() => void) | undefined;
       let unregisterLockHandlers: (() => void) | undefined;
       if (config.peerBus?.enabled === true) {
-        const sessionDir = join(opts.sessionsDir, sessionId);
-        await mkdir(sessionDir, { recursive: true });
-        const lock = acquireCoordinatorLock(sessionDir, consoleLogger);
-        releaseCoordinatorLock = lock.release;
-        unregisterLockHandlers = registerLockCleanupHandlers(lock.release, consoleLogger);
-
-        const registryPath = join(sessionDir, "registry.json");
-        const messagesPath = join(sessionDir, "messages.jsonl");
-
-        // Touch-initialise persistence files so clients see them immediately.
-        const { appendFile } = await import("fs/promises");
-        await appendFile(messagesPath, "");
-
-        const peerRegistry = new SessionRegistry(registryPath, consoleLogger);
-        await peerRegistry.load();
-        const peerStore = new MessageStore(messagesPath, consoleLogger);
-
-        // Reconciliation: drop orphaned / misrouted unread ids.
-        const messageLookup = await peerStore.loadAll();
-        const summary = peerRegistry.reconcile(messageLookup);
-        if (summary.orphanedCount > 0 || summary.misroutedCount > 0) {
-          logger.log({
-            type: "peer_bus_reconciliation",
-            sessionId,
-            orphanedCount: summary.orphanedCount,
-            misroutedCount: summary.misroutedCount,
-            firstFewIds: summary.firstFewIds,
-          });
-        }
-        // Always persist registry.json on startup so the file exists before connections land.
-        await peerRegistry.persist();
-
-        peerBusWiring = { registry: peerRegistry, store: peerStore, logger: consoleLogger };
+        const bootstrap = await bootstrapPeerBus(opts.sessionsDir, sessionId, logger, consoleLogger);
+        peerBusWiring = bootstrap.wiring;
+        releaseCoordinatorLock = bootstrap.releaseLock;
+        unregisterLockHandlers = bootstrap.unregisterHandlers;
       }
 
       const server = createCoordinatorServer({
@@ -249,6 +216,126 @@ async function main(): Promise<void> {
         if (unregisterLockHandlers !== undefined) unregisterLockHandlers();
         if (releaseCoordinatorLock !== undefined) releaseCoordinatorLock();
       }
+    });
+
+  program
+    .command("serve")
+    .description("Run the coordinator for peer-bus-only operation (long-running; no workflow phases). For one-shot phase-driven workflow see `start`.")
+    .option("--config <path>", "Path to MCP config file", "mcp-config.json")
+    .option("--session <id>", "Resume an existing coordinator session")
+    .option("--sessions-dir <path>", "Sessions storage directory", "./sessions")
+    .action(async (opts: { config: string; session?: string; sessionsDir: string }) => {
+      if (!(await fileExists(opts.config))) {
+        console.error(`Error: config file not found: ${opts.config}`);
+        process.exit(1);
+      }
+
+      const config = loadConfig(opts.config);
+      config.rootDir = resolve(config.rootDir);
+
+      if (config.peerBus?.enabled !== true) {
+        console.error(
+          "Error: `serve` requires `peerBus.enabled: true` in the config. Enable the peer bus or use `start` for phase-driven workflows."
+        );
+        process.exit(1);
+      }
+
+      if (!isLoopbackHost(config.host) && (!config.authTokenEnvVar || !process.env[config.authTokenEnvVar])) {
+        console.error("Error: a transport auth token is required when binding the coordinator beyond loopback.");
+        process.exit(1);
+      }
+
+      // Serve mode does NOT validate agent CLIs — no workflow runs.
+      const registry = new AgentRegistry(config.agents);
+
+      const session = opts.session
+        ? await SessionManager.load(opts.sessionsDir, opts.session)
+        : await SessionManager.create(opts.sessionsDir);
+      const { sessionId } = session.get();
+      const logger = new AuditLogger(opts.sessionsDir, sessionId);
+      const snapshots = new SnapshotStore(opts.sessionsDir, sessionId);
+      const checkpoint = new HumanCheckpoint(logger, sessionId, "proceed");
+      const spawnTracker = new SpawnTracker(config.spawning, session.get().spawnStats);
+
+      const agentCtx: AgentToolsContext = {
+        registry,
+        spawnTracker,
+        timeoutMs: 120_000,
+        logger,
+        sessionId,
+        phase: session.get().currentPhase,
+        checkpoint,
+        coordinatorUrl: `http://${config.host}:${config.port}/sse`,
+        ...(config.authTokenEnvVar && process.env[config.authTokenEnvVar]
+          ? { coordinatorAuthToken: process.env[config.authTokenEnvVar]! }
+          : {}),
+        persistSpawnStats: async (stats) => {
+          await session.update({ spawnStats: stats });
+        },
+      };
+
+      const reviserAgentId = registry.revisers()[0];
+      const consensusLoop = new ConsensusLoop(agentCtx, session, logger, snapshots, checkpoint, {
+        maxRounds: config.consensus.maxRounds,
+        reviewerAgentIds: registry.reviewers(),
+        ...(reviserAgentId !== undefined ? { reviserAgentId } : {}),
+      });
+
+      const bootstrap = await bootstrapPeerBus(opts.sessionsDir, sessionId, logger, consoleLogger);
+
+      const server = createCoordinatorServer({
+        config,
+        session,
+        logger,
+        consensus: consensusLoop,
+        registry,
+        spawnTracker,
+        checkpoint,
+        dryRun: false,
+        peerBus: bootstrap.wiring,
+      });
+
+      const stopServer = await startHttpServer(
+        server,
+        config.port,
+        config.host,
+        config.authTokenEnvVar ? process.env[config.authTokenEnvVar] : undefined
+      );
+
+      logger.log({ type: "serve_started", sessionId, port: config.port, host: config.host });
+      console.log(`Coordinator serve mode running on http://${config.host}:${config.port}/sse (session ${sessionId})`);
+      console.log("Press Ctrl+C to stop.");
+
+      // Block until SIGINT/SIGTERM. The bootstrap already registered lock-cleanup
+      // handlers on SIGINT/SIGTERM/exit/uncaughtException/unhandledRejection which
+      // call process.exit() — our wait-promise resolves via a distinct listener
+      // that also calls stopServer(). We use process.once to avoid double handling
+      // if the lock-cleanup handler fires first.
+      await new Promise<void>((resolveWait) => {
+        const onSignal = (signal: NodeJS.Signals): void => {
+          console.log(`\nReceived ${signal}, shutting down…`);
+          resolveWait();
+        };
+        process.once("SIGINT", () => onSignal("SIGINT"));
+        process.once("SIGTERM", () => onSignal("SIGTERM"));
+      });
+
+      try {
+        stopServer();
+      } catch (err) {
+        console.error("stopServer error:", err);
+      }
+      try {
+        bootstrap.unregisterHandlers();
+      } catch {
+        // ignore
+      }
+      try {
+        bootstrap.releaseLock();
+      } catch {
+        // ignore
+      }
+      logger.log({ type: "serve_stopped", sessionId });
     });
 
   program

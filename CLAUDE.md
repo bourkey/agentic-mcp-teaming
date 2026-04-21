@@ -37,6 +37,7 @@ The `run-review-gate` skill (`.claude/skills/run-review-gate/SKILL.md`) handles 
 
 ## Peer session bus
 
+- **`serve` is the operational mode when the peer bus is in use.** `start` with peer-bus enabled is a valid configuration but short-lived — it shuts down on phase completion. For tmux teaming and any long-running bus deployment, use `npm start -- serve`.
 - **`execFile` only** for the tmux notifier — no `exec`, no `spawn { shell: true }`, no string interpolation into shell commands
 - **Session tokens are never logged and never persisted** — the registry stores only `sha256(token)`. If you add logging anywhere in the peer-bus path, ensure tokens are redacted to `"<redacted>"`; never interpolate a raw token into a Zod error message, a thrown error, or a log statement
 - **Compile-time constants**: `PEER_BUS_MAX_BODY_BYTES = 65536`, `PEER_BUS_MAX_UNREAD = 10000`, `PEER_BUS_MAX_RESPONSE_BYTES = 1048576`. Do NOT thread these through config

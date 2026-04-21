@@ -224,9 +224,44 @@ See [docs/session-format.md](docs/session-format.md) for the full schema.
 
 **Reviewer timeout warning** — A CLI reviewer did not respond within the timeout period. Its findings are recorded as empty. If it is non-optional, check that the CLI is installed and authenticated. Set `"optional": true` to suppress this as a warning.
 
+## Running the coordinator
+
+Two subcommands, two different lifecycles:
+
+- `coordinator start ...` — **phase-driven workflow**, one-shot. Runs `proposal → design → spec → task → implementation` against an openspec change directory, then shuts down. Use when you want the coordinator to drive a single change to completion.
+- `coordinator serve ...` — **bus-only, long-running**. Starts the coordinator with the peer bus enabled and blocks on signal. No workflow runs. Use when hosting the peer bus for tmux-based teaming. Requires `peerBus.enabled: true` in config; fails fast otherwise.
+
+### Three ways to invoke
+
+| Invocation | Use when |
+|---|---|
+| `coordinator serve --config mcp-config.json` | After `npm install -g .` or `npm link` (recommended for daily use) |
+| `npm run serve -- --config mcp-config.json` | Local dev without linking; runs via `tsx` against the source |
+| `npm start -- serve --config mcp-config.json` | Equivalent to the above; the `--` separator is required so npm doesn't eat the flags |
+
+To install the `coordinator` binary on your `PATH`:
+
+```bash
+npm install   # one-time
+npm run build # produces dist/index.js with shebang + exec bit
+npm link      # adds the `coordinator` symlink to your global bin
+```
+
+After that:
+
+```bash
+coordinator serve --config mcp-config.json --sessions-dir ./sessions
+```
+
+The coordinator listens on `http://<host>:<port>/sse` and stays up until you send `SIGINT` / `SIGTERM`. Clean shutdown releases `coordinator.lock` and closes the HTTP socket.
+
+`serve` does NOT validate agent CLIs at startup — it doesn't run workflows, so missing agent CLIs are not a problem.
+
 ## Peer session bus
 
 An opt-in feature that lets multiple long-running Claude Code sessions (for example, tmux panes attached to git worktrees) exchange typed workflow events and short chat messages through the coordinator. The bus is disabled by default.
+
+**For tmux-based teaming, run the coordinator via `serve` (see "Running the coordinator" above) — not `start`. `start` with peer-bus enabled works, but the HTTP server will shut down when phases finish, dropping connected sessions.**
 
 ### Enabling
 
