@@ -1,0 +1,6 @@
+stage: code
+timestamp: 2026-04-21T00:00:00Z
+reviewers: claude-security, claude-quality, claude-error-handling, claude-test-coverage, codex-peer
+rounds: 1
+spec_gate_timestamp: 2026-04-21T00:00:00Z
+spec_gate_rounds: 2
