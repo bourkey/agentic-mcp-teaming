@@ -35,6 +35,17 @@ The `run-review-gate` skill (`.claude/skills/run-review-gate/SKILL.md`) handles 
 - **Auth token** — compared with `timingSafeEqual`; never use `===` for token comparison
 - **CLI config** — reviewer `cli` field is a free string today; validate against an allowlist if expanding to untrusted config sources
 
+## Peer session bus
+
+- **`execFile` only** for the tmux notifier — no `exec`, no `spawn { shell: true }`, no string interpolation into shell commands
+- **Session tokens are never logged and never persisted** — the registry stores only `sha256(token)`. If you add logging anywhere in the peer-bus path, ensure tokens are redacted to `"<redacted>"`; never interpolate a raw token into a Zod error message, a thrown error, or a log statement
+- **Compile-time constants**: `PEER_BUS_MAX_BODY_BYTES = 65536`, `PEER_BUS_MAX_UNREAD = 10000`, `PEER_BUS_MAX_RESPONSE_BYTES = 1048576`. Do NOT thread these through config
+- **Registry uses `Map<string, Entry>`** — never a plain object. Prototype-pollution resistance depends on this
+- **Timestamps** are always UTC with trailing `Z`. Comparisons use `Date.parse()` — never raw string compare
+- **Authentication iterates every entry** with `timingSafeEqual` against a 32-byte zero sentinel for empty-tokenHash entries. No early return, no short-circuit — those are timing oracles
+- **Envelope rendering** strips XML 1.0 illegal control chars before XML-escaping both body and attribute values — this is the only place peer content gets serialised to an envelope
+- **POSIX filesystem required** for `coordinator.lock` (`O_EXCL|O_CREAT` must be atomic). NFS-pre-v3 and some overlay filesystems are unsupported
+
 ## Testing conventions
 
 - Use `vi.mock("child_process")` at module level (top of test file) for any test that exercises `invokeReviewerTool`. Late mocking (`vi.doMock` inside tests) does not work because `execFileAsync` is bound at import time.

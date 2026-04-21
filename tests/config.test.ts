@@ -100,3 +100,114 @@ describe("McpConfig schema — task 1.7", () => {
     }
   });
 });
+
+describe("peerBus config block", () => {
+  it("treats bus as disabled when block is absent", async () => {
+    await setup();
+    try {
+      const path = await writeConfig("no-bus.json", { toolAllowlist: [] });
+      const config = loadConfig(path);
+      expect(config.peerBus).toBeUndefined();
+    } finally {
+      await teardown();
+    }
+  });
+
+  it("accepts enabled: false explicitly", async () => {
+    await setup();
+    try {
+      const path = await writeConfig("disabled.json", {
+        toolAllowlist: [],
+        peerBus: { enabled: false },
+      });
+      const config = loadConfig(path);
+      expect(config.peerBus?.enabled).toBe(false);
+    } finally {
+      await teardown();
+    }
+  });
+
+  it("applies notifier defaults verbatim when enabled: true is minimal", async () => {
+    await setup();
+    try {
+      const path = await writeConfig("min.json", {
+        toolAllowlist: [],
+        peerBus: { enabled: true },
+      });
+      const config = loadConfig(path);
+      expect(config.peerBus?.enabled).toBe(true);
+      expect(config.peerBus?.notifier.tmuxEnabled).toBe(false);
+      expect(config.peerBus?.notifier.displayMessageFormat).toBe("peer-bus: from {from} kind {kind}");
+      expect(config.peerBus?.notifier.unreadTabStyle).toBe("bg=yellow");
+    } finally {
+      await teardown();
+    }
+  });
+
+  it("rejects unknown key inside peerBus", async () => {
+    await setup();
+    try {
+      const path = await writeConfig("unknown.json", {
+        toolAllowlist: [],
+        peerBus: { enabled: true, unknownField: "x" },
+      });
+      expect(() => loadConfig(path)).toThrow(/unknownField/);
+    } finally {
+      await teardown();
+    }
+  });
+
+  it("rejects unknown key inside notifier", async () => {
+    await setup();
+    try {
+      const path = await writeConfig("unknown-notifier.json", {
+        toolAllowlist: [],
+        peerBus: { enabled: true, notifier: { unknownField: "x" } },
+      });
+      expect(() => loadConfig(path)).toThrow(/unknownField/);
+    } finally {
+      await teardown();
+    }
+  });
+
+  it("rejects displayMessageFormat containing a tmux format character", async () => {
+    await setup();
+    try {
+      const path = await writeConfig("bad-format.json", {
+        toolAllowlist: [],
+        peerBus: { enabled: true, notifier: { displayMessageFormat: "from #(whoami)" } },
+      });
+      expect(() => loadConfig(path)).toThrow(/tmux format-language/);
+    } finally {
+      await teardown();
+    }
+  });
+
+  it("rejects unreadTabStyle containing shell metacharacters", async () => {
+    await setup();
+    try {
+      const path = await writeConfig("bad-style.json", {
+        toolAllowlist: [],
+        peerBus: { enabled: true, notifier: { unreadTabStyle: "; rm -rf /" } },
+      });
+      expect(() => loadConfig(path)).toThrow(/simple tmux style/);
+    } finally {
+      await teardown();
+    }
+  });
+
+  it("accepts tmuxEnabled: true with default format and style", async () => {
+    await setup();
+    try {
+      const path = await writeConfig("tmux-on.json", {
+        toolAllowlist: [],
+        peerBus: { enabled: true, notifier: { tmuxEnabled: true } },
+      });
+      const config = loadConfig(path);
+      expect(config.peerBus?.notifier.tmuxEnabled).toBe(true);
+      expect(config.peerBus?.notifier.displayMessageFormat).toBe("peer-bus: from {from} kind {kind}");
+    } finally {
+      await teardown();
+    }
+  });
+});

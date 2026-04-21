@@ -1,8 +1,8 @@
 import { Command } from "commander";
 import { execFile } from "child_process";
 import { promisify } from "util";
-import { access } from "fs/promises";
-import { resolve } from "path";
+import { access, mkdir } from "fs/promises";
+import { resolve, join } from "path";
 import { loadConfig } from "./config.js";
 import { SessionManager } from "./core/session.js";
 import { AuditLogger } from "./core/audit.js";
@@ -11,8 +11,15 @@ import { HumanCheckpoint } from "./core/checkpoint.js";
 import { ConsensusLoop } from "./core/consensus.js";
 import { AgentRegistry } from "./core/registry.js";
 import { SpawnTracker } from "./core/spawn-tracker.js";
+import { MessageStore } from "./core/message-store.js";
+import { SessionRegistry } from "./core/session-registry.js";
+import { consoleLogger } from "./core/logger.js";
+import {
+  acquireCoordinatorLock,
+  registerLockCleanupHandlers,
+} from "./core/coordinator-lock.js";
 import { AgentToolsContext } from "./server/tools/agents.js";
-import { createCoordinatorServer, startHttpServer } from "./server/index.js";
+import { createCoordinatorServer, startHttpServer, type PeerBusWiring } from "./server/index.js";
 import { runProposalPhase } from "./phases/proposal.js";
 import { runDesignPhase } from "./phases/design.js";
 import { runSpecsPhase } from "./phases/specs.js";
@@ -143,6 +150,46 @@ async function main(): Promise<void> {
 
       const phaseCtx = { session, logger, consensus: consensusLoop, checkpoint, registry };
 
+      // Peer-bus wiring (opt-in via peerBus.enabled)
+      let peerBusWiring: PeerBusWiring | undefined;
+      let releaseCoordinatorLock: (() => void) | undefined;
+      let unregisterLockHandlers: (() => void) | undefined;
+      if (config.peerBus?.enabled === true) {
+        const sessionDir = join(opts.sessionsDir, sessionId);
+        await mkdir(sessionDir, { recursive: true });
+        const lock = acquireCoordinatorLock(sessionDir, consoleLogger);
+        releaseCoordinatorLock = lock.release;
+        unregisterLockHandlers = registerLockCleanupHandlers(lock.release, consoleLogger);
+
+        const registryPath = join(sessionDir, "registry.json");
+        const messagesPath = join(sessionDir, "messages.jsonl");
+
+        // Touch-initialise persistence files so clients see them immediately.
+        const { appendFile } = await import("fs/promises");
+        await appendFile(messagesPath, "");
+
+        const peerRegistry = new SessionRegistry(registryPath, consoleLogger);
+        await peerRegistry.load();
+        const peerStore = new MessageStore(messagesPath, consoleLogger);
+
+        // Reconciliation: drop orphaned / misrouted unread ids.
+        const messageLookup = await peerStore.loadAll();
+        const summary = peerRegistry.reconcile(messageLookup);
+        if (summary.orphanedCount > 0 || summary.misroutedCount > 0) {
+          logger.log({
+            type: "peer_bus_reconciliation",
+            sessionId,
+            orphanedCount: summary.orphanedCount,
+            misroutedCount: summary.misroutedCount,
+            firstFewIds: summary.firstFewIds,
+          });
+        }
+        // Always persist registry.json on startup so the file exists before connections land.
+        await peerRegistry.persist();
+
+        peerBusWiring = { registry: peerRegistry, store: peerStore, logger: consoleLogger };
+      }
+
       const server = createCoordinatorServer({
         config,
         session,
@@ -152,6 +199,7 @@ async function main(): Promise<void> {
         spawnTracker,
         checkpoint,
         dryRun: opts.dryRun === true,
+        ...(peerBusWiring !== undefined ? { peerBus: peerBusWiring } : {}),
       });
       const stopServer = await startHttpServer(
         server,
@@ -198,6 +246,8 @@ async function main(): Promise<void> {
         process.exit(1);
       } finally {
         stopServer();
+        if (unregisterLockHandlers !== undefined) unregisterLockHandlers();
+        if (releaseCoordinatorLock !== undefined) releaseCoordinatorLock();
       }
     });
 

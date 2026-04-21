@@ -7,12 +7,21 @@ import { McpConfig } from "../config.js";
 import { SharedToolsContext, readFileTool, writeFileTool, grepTool, globTool, bashTool } from "./tools/shared.js";
 import { AgentToolsContext, invokeAgentTool, makeMockAgentTool, invokeReviewerTool } from "./tools/agents.js";
 import { WorkflowToolsContext, submitForConsensusTool, advancePhaseTool, getSessionStateTool, resolveCheckpointTool } from "./tools/workflow.js";
+import {
+  registerSessionTool,
+  sendMessageTool,
+  readMessagesTool,
+  type PeerBusContext,
+} from "./tools/peer-bus.js";
+import { MessageStore } from "../core/message-store.js";
+import { SessionRegistry } from "../core/session-registry.js";
 import { AuditLogger } from "../core/audit.js";
 import { SessionManager } from "../core/session.js";
 import { ConsensusLoop } from "../core/consensus.js";
 import { AgentRegistry } from "../core/registry.js";
 import { SpawnTracker } from "../core/spawn-tracker.js";
 import { HumanCheckpoint } from "../core/checkpoint.js";
+import type { Logger } from "../core/logger.js";
 
 export interface CoordinatorServerOptions {
   config: McpConfig;
@@ -23,6 +32,13 @@ export interface CoordinatorServerOptions {
   spawnTracker: SpawnTracker;
   checkpoint: HumanCheckpoint;
   dryRun?: boolean;
+  peerBus?: PeerBusWiring;
+}
+
+export interface PeerBusWiring {
+  registry: SessionRegistry;
+  store: MessageStore;
+  logger: Logger;
 }
 
 export function getConfiguredAuthToken(config: McpConfig): string | undefined {
@@ -240,6 +256,59 @@ export function createCoordinatorServer(opts: CoordinatorServerOptions): McpServ
       return { content: [{ type: "text", text: JSON.stringify(result) }] };
     }
   );
+
+  // --- Peer bus tools (opt-in via peerBus.enabled) ---
+
+  if (config.peerBus?.enabled === true && opts.peerBus !== undefined) {
+    const peerCtx: PeerBusContext = {
+      registry: opts.peerBus.registry,
+      store: opts.peerBus.store,
+      notifierConfig: config.peerBus.notifier,
+      logger: opts.peerBus.logger,
+      audit: {
+        log: (entry) => {
+          logger.log({ type: "tool_call", sessionId: session.get().sessionId, ...entry });
+        },
+      },
+    };
+
+    const allowlist = new Set(config.toolAllowlist);
+
+    if (allowlist.has("register_session")) {
+      server.tool(
+        "register_session",
+        {
+          name: z.string(),
+          priorSessionToken: z.string().optional(),
+        },
+        async (params) => registerSessionTool(peerCtx, params),
+      );
+    }
+
+    if (allowlist.has("send_message")) {
+      server.tool(
+        "send_message",
+        {
+          sessionToken: z.string(),
+          to: z.string(),
+          kind: z.enum(["workflow-event", "chat", "request", "response"]),
+          body: z.unknown(),
+          replyTo: z.string().optional(),
+        },
+        async (params) => sendMessageTool(peerCtx, params),
+      );
+    }
+
+    if (allowlist.has("read_messages")) {
+      server.tool(
+        "read_messages",
+        {
+          sessionToken: z.string(),
+        },
+        async (params) => readMessagesTool(peerCtx, params),
+      );
+    }
+  }
 
   return server;
 }
