@@ -20,6 +20,26 @@ const ReviewerEntry = z.object({
 
 export type ReviewerConfig = z.infer<typeof ReviewerEntry>;
 
+const PeerBusNotifier = z.object({
+  tmuxEnabled: z.boolean().default(false),
+  displayMessageFormat: z
+    .string()
+    .regex(
+      /^[^#`$;&|\n\r]*$/,
+      "displayMessageFormat may not contain tmux format-language sequences or shell metacharacters (# ` $ ; & | newline)"
+    )
+    .default("peer-bus: from {from} kind {kind}"),
+  unreadTabStyle: z
+    .string()
+    .regex(/^[A-Za-z0-9=,._-]+$/, "unreadTabStyle must be a simple tmux style spec")
+    .default("bg=yellow"),
+}).strict();
+
+const PeerBus = z.object({
+  enabled: z.boolean().default(false),
+  notifier: PeerBusNotifier.default({}),
+}).strict();
+
 const McpConfig = z.object({
   port: z.number().int().positive().default(3100),
   host: z.string().default("127.0.0.1"),
@@ -36,7 +56,10 @@ const McpConfig = z.object({
     maxConcurrentSubInvocations: z.number().int().positive().default(5),
     maxSessionInvocations: z.number().int().positive().default(50),
   }).default({}),
+  peerBus: PeerBus.optional(),
 });
+
+export type PeerBusConfig = z.infer<typeof PeerBus>;
 
 export type McpConfig = z.infer<typeof McpConfig>;
 
