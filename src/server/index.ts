@@ -313,14 +313,25 @@ export function createCoordinatorServer(opts: CoordinatorServerOptions): McpServ
   return server;
 }
 
+/**
+ * Start the HTTP MCP transport. `serverFactory` is invoked PER SSE connection —
+ * each client gets its own McpServer instance bound to its own SSE transport.
+ * Shared state (session registry, message store, config) is captured in the
+ * factory's closure, so every generated server sees the same backing data.
+ *
+ * The SDK's McpServer/Server enforces one-transport-per-instance; calling
+ * `.connect()` twice on the same McpServer throws, so the factory-per-connection
+ * pattern is mandatory for multi-client HTTP transport.
+ */
 export async function startHttpServer(
-  server: McpServer,
+  serverFactory: () => McpServer,
   port: number,
   host = "127.0.0.1",
   authToken?: string
 ): Promise<() => void> {
   const app = express();
   const transports = new Map<string, SSEServerTransport>();
+  const connectionServers = new Map<string, McpServer>();
 
   app.get("/sse", (req, res) => {
     if (!isAuthorizedRequest(req, authToken)) {
@@ -328,8 +339,19 @@ export async function startHttpServer(
       return;
     }
     const transport = new SSEServerTransport("/message", res);
+    const server = serverFactory();
     transports.set(transport.sessionId, transport);
-    res.on("close", () => transports.delete(transport.sessionId));
+    connectionServers.set(transport.sessionId, server);
+    res.on("close", () => {
+      transports.delete(transport.sessionId);
+      const conn = connectionServers.get(transport.sessionId);
+      connectionServers.delete(transport.sessionId);
+      if (conn !== undefined) {
+        conn.close().catch((err: unknown) => {
+          console.error("error closing per-connection MCP server:", err);
+        });
+      }
+    });
     server.connect(transport).catch(console.error);
   });
 
@@ -341,7 +363,10 @@ export async function startHttpServer(
     const sessionId = req.query["sessionId"] as string;
     const transport = transports.get(sessionId);
     if (!transport) { res.status(404).send("Session not found"); return; }
-    transport.handlePostMessage(req, res).catch(console.error);
+    // express.json has already consumed the request stream, so pass the
+    // parsed body as the third argument — the SSE transport will use it
+    // instead of re-reading the (now empty) stream.
+    transport.handlePostMessage(req, res, req.body).catch(console.error);
   });
 
   const httpServer = app.listen(port, host, () => {
