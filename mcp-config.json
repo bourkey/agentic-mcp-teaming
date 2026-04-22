@@ -11,7 +11,10 @@
     "submit_for_consensus",
     "advance_phase",
     "get_session_state",
-    "resolve_checkpoint"
+    "resolve_checkpoint",
+    "register_session",
+    "send_message",
+    "read_messages"
   ],
   "authTokenEnvVar": "COORDINATOR_AUTH_TOKEN",
   "agents": {
@@ -90,5 +93,13 @@
     "maxDepth": 2,
     "maxConcurrentSubInvocations": 5,
     "maxSessionInvocations": 50
+  },
+  "peerBus": {
+    "enabled": true,
+    "notifier": {
+      "tmuxEnabled": true,
+      "displayMessageFormat": "peer-bus: from {from} kind {kind}",
+      "unreadTabStyle": "bg=yellow"
+    }
   }
 }
