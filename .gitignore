@@ -5,6 +5,7 @@ vscode-extension/dist/
 *.vsix
 .env
 sessions/
+coordinator.log
 
 # Build artifacts
 *.tsbuildinfo

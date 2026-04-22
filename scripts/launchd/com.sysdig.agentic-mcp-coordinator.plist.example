@@ -1,0 +1,76 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  macOS launchd user agent template for the agentic-mcp-teaming coordinator.
+
+  To install:
+
+    1. Copy this file to ~/Library/LaunchAgents/com.sysdig.agentic-mcp-coordinator.plist
+    2. Edit the ProgramArguments / WorkingDirectory paths for your install
+    3. Load it:
+         launchctl load ~/Library/LaunchAgents/com.sysdig.agentic-mcp-coordinator.plist
+
+  To stop:
+
+    launchctl unload ~/Library/LaunchAgents/com.sysdig.agentic-mcp-coordinator.plist
+
+  To tail logs:
+
+    tail -f ~/Library/Logs/agentic-mcp-coordinator.log
+
+  Notes:
+    - KeepAlive { SuccessfulExit: false } auto-restarts only on crash; a clean
+      `launchctl unload` stops the agent without bounce.
+    - The absolute `node` path is pinned to whatever nvm version you built with.
+      Update after `nvm install <newer>` — or use /usr/local/bin/node if you
+      install node outside nvm.
+    - The plist runs `node dist/index.js` directly, bypassing the `coordinator`
+      shim, so it doesn't depend on `npm link` having been run.
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.sysdig.agentic-mcp-coordinator</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>__NODE_PATH__</string>
+    <string>__PROJECT_ROOT__/dist/index.js</string>
+    <string>serve</string>
+    <string>--config</string>
+    <string>__PROJECT_ROOT__/mcp-config.json</string>
+    <string>--sessions-dir</string>
+    <string>__PROJECT_ROOT__/sessions</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>__PROJECT_ROOT__</string>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  <key>KeepAlive</key>
+  <dict>
+    <key>SuccessfulExit</key>
+    <false/>
+  </dict>
+
+  <key>StandardOutPath</key>
+  <string>__HOME__/Library/Logs/agentic-mcp-coordinator.log</string>
+
+  <key>StandardErrorPath</key>
+  <string>__HOME__/Library/Logs/agentic-mcp-coordinator.err</string>
+
+  <!-- Throttle restart loop to 10 seconds to avoid hammering on repeated crashes -->
+  <key>ThrottleInterval</key>
+  <integer>10</integer>
+
+  <!-- Uncomment if you need to pass the transport auth token into the service context
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>COORDINATOR_AUTH_TOKEN</key>
+    <string>__YOUR_AUTH_TOKEN__</string>
+  </dict>
+  -->
+</dict>
+</plist>

@@ -18,6 +18,40 @@ See [docs/architecture.md](docs/architecture.md) for the full design.
 
 ```bash
 npm install
+npm run build      # compiles to dist/, marks dist/index.js executable
+npm link           # puts the `coordinator` binary on your PATH
+```
+
+Verify:
+
+```bash
+coordinator --help
+```
+
+You should see `serve`, `start`, `status` subcommands.
+
+## Setting up on a new system
+
+Fresh-machine checklist:
+
+```bash
+# 1. Prerequisites
+node --version    # must be 20+
+git --version
+tmux --version    # optional but recommended for the "running the coordinator" section below
+
+# 2. Clone + build
+git clone https://github.com/bourkey/agentic-mcp-teaming.git
+cd agentic-mcp-teaming
+npm install
+npm run build
+npm link
+
+# 3. Configure (see "Configuration" below)
+cp .env.example .env
+# edit .env and mcp-config.json
+
+# 4. Start the coordinator (see "Running the coordinator" below)
 ```
 
 ## Configuration
@@ -256,6 +290,64 @@ coordinator serve --config mcp-config.json --sessions-dir ./sessions
 The coordinator listens on `http://<host>:<port>/sse` and stays up until you send `SIGINT` / `SIGTERM`. Clean shutdown releases `coordinator.lock` and closes the HTTP socket.
 
 `serve` does NOT validate agent CLIs at startup — it doesn't run workflows, so missing agent CLIs are not a problem.
+
+### Keeping it running
+
+Three options, in increasing durability:
+
+#### Option 1 — foreground in a terminal
+
+```bash
+coordinator serve --config mcp-config.json
+```
+
+Dies when you close the terminal. Fine for debugging, not for daily use.
+
+#### Option 2 — detached tmux session (survives terminal close, not reboot)
+
+```bash
+tmux new-session -d -s coordinator \
+  'coordinator serve --config mcp-config.json 2>&1 | tee -a coordinator.log'
+```
+
+Reattach with `tmux attach -t coordinator`. Stop with `tmux send-keys -t coordinator C-c` then `tmux kill-session -t coordinator`. Logs are in `coordinator.log` (gitignored) and visible on reattach.
+
+#### Option 3 — launchd user agent (survives reboots, auto-restarts on crash)
+
+On macOS, install as a launchd user agent:
+
+```bash
+./scripts/launchd/install.sh     # writes ~/Library/LaunchAgents/com.sysdig.agentic-mcp-coordinator.plist and loads it
+```
+
+The coordinator now starts on login and auto-restarts on crash. Logs go to `~/Library/Logs/agentic-mcp-coordinator.log`.
+
+Manage it:
+```bash
+launchctl list | grep agentic-mcp-coordinator    # check status
+tail -f ~/Library/Logs/agentic-mcp-coordinator.log   # watch logs
+./scripts/launchd/uninstall.sh                    # stop + remove
+```
+
+**Heads-up**: the install script pins the absolute path to `node` (via `command -v node`) at install time. If you upgrade node via nvm later, re-run `./scripts/launchd/install.sh` to update the path in the plist.
+
+### Cleaning stale sessions
+
+Each `coordinator serve` run creates a new session directory under `sessions/<uuid>/`. When the coordinator exits cleanly it removes `coordinator.lock`; on an uncaught crash or `SIGKILL` the lock stays and accumulates. To prune stale session dirs (keeps the currently-active one):
+
+```bash
+./scripts/clean-stale-sessions.sh
+```
+
+Safe to run anytime — it only removes directories whose lock PID is dead or absent.
+
+### Troubleshooting
+
+**`Already connected to a transport` errors in coordinator.log** — fixed in commit `4e7b0c4`. If you're still seeing these, your `dist/` is stale. Run `npm run build` again.
+
+**`Error: EEXIST: file already exists, open 'sessions/<id>/coordinator.lock'`** — a prior coordinator was killed without cleaning up. That session's lock is stale. Either delete the specific lock or run `./scripts/clean-stale-sessions.sh`. The new coordinator will create its own fresh session dir; the stale one is harmless but ugly.
+
+**`Error: serve requires peerBus.enabled: true`** — your `mcp-config.json` doesn't have `peerBus` configured. Add the block and add the three peer-bus tool names (`register_session`, `send_message`, `read_messages`) to `toolAllowlist`. See "Peer session bus" below for a sample config.
 
 ## Peer session bus
 
