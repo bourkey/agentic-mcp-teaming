@@ -157,19 +157,20 @@ async function main(): Promise<void> {
         unregisterLockHandlers = bootstrap.unregisterHandlers;
       }
 
-      const server = createCoordinatorServer({
-        config,
-        session,
-        logger,
-        consensus: consensusLoop,
-        registry,
-        spawnTracker,
-        checkpoint,
-        dryRun: opts.dryRun === true,
-        ...(peerBusWiring !== undefined ? { peerBus: peerBusWiring } : {}),
-      });
+      const makeServer = (): ReturnType<typeof createCoordinatorServer> =>
+        createCoordinatorServer({
+          config,
+          session,
+          logger,
+          consensus: consensusLoop,
+          registry,
+          spawnTracker,
+          checkpoint,
+          dryRun: opts.dryRun === true,
+          ...(peerBusWiring !== undefined ? { peerBus: peerBusWiring } : {}),
+        });
       const stopServer = await startHttpServer(
-        server,
+        makeServer,
         config.port,
         config.host,
         config.authTokenEnvVar ? process.env[config.authTokenEnvVar] : undefined
@@ -283,20 +284,21 @@ async function main(): Promise<void> {
 
       const bootstrap = await bootstrapPeerBus(opts.sessionsDir, sessionId, logger, consoleLogger);
 
-      const server = createCoordinatorServer({
-        config,
-        session,
-        logger,
-        consensus: consensusLoop,
-        registry,
-        spawnTracker,
-        checkpoint,
-        dryRun: false,
-        peerBus: bootstrap.wiring,
-      });
+      const makeServer = (): ReturnType<typeof createCoordinatorServer> =>
+        createCoordinatorServer({
+          config,
+          session,
+          logger,
+          consensus: consensusLoop,
+          registry,
+          spawnTracker,
+          checkpoint,
+          dryRun: false,
+          peerBus: bootstrap.wiring,
+        });
 
       const stopServer = await startHttpServer(
-        server,
+        makeServer,
         config.port,
         config.host,
         config.authTokenEnvVar ? process.env[config.authTokenEnvVar] : undefined
