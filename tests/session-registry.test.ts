@@ -362,3 +362,100 @@ describe("Snapshot / restore unread", () => {
     expect(r.get("frontend")?.unreadMessageIds).toEqual(["m1", "m2"]);
   });
 });
+
+describe("SessionRegistry autoWakeKey persistence and revalidation", () => {
+  it("persist then load round-trips autoWakeKey", async () => {
+    const { logger } = makeLogger();
+    const path = join(dir, "r.json");
+    const r1 = new SessionRegistry(path, logger);
+    r1.register("frontend", undefined, "claude-inbox");
+    await r1.persist();
+
+    const r2 = new SessionRegistry(path, logger);
+    await r2.load();
+    expect(r2.get("frontend")?.autoWakeKey).toBe("claude-inbox");
+  });
+
+  it("load without autoWakeKey field (pre-change registry.json) treats entry as opt-out", async () => {
+    const { logger } = makeLogger();
+    const path = join(dir, "r.json");
+    const { writeFile } = await import("fs/promises");
+    await writeFile(
+      path,
+      JSON.stringify({
+        version: 1,
+        sessions: {
+          frontend: {
+            name: "frontend",
+            tokenHash: "deadbeef",
+            registeredAt: "2026-01-01T00:00:00.000Z",
+            lastSeenAt: "2026-01-01T00:00:00.000Z",
+            unreadMessageIds: [],
+          },
+        },
+      })
+    );
+    const r = new SessionRegistry(path, logger);
+    await r.load();
+    expect(r.get("frontend")?.autoWakeKey).toBeUndefined();
+  });
+
+  it("revalidateAutoWakeKeys clears stale keys and reports what was cleared", () => {
+    const { logger } = makeLogger();
+    const r = new SessionRegistry(join(dir, "r.json"), logger);
+    r.register("a", undefined, "still-valid");
+    r.register("b", undefined, "removed-key");
+    r.register("c"); // no autoWakeKey
+
+    const cleared = r.revalidateAutoWakeKeys(new Set(["still-valid", "other-valid"]));
+    expect(cleared).toEqual([{ name: "b", removedKey: "removed-key" }]);
+    expect(r.get("a")?.autoWakeKey).toBe("still-valid");
+    expect(r.get("b")?.autoWakeKey).toBeUndefined();
+    expect(r.get("c")?.autoWakeKey).toBeUndefined();
+  });
+
+  it("revalidateAutoWakeKeys with null allowlist clears every stored key", () => {
+    const { logger } = makeLogger();
+    const r = new SessionRegistry(join(dir, "r.json"), logger);
+    r.register("a", undefined, "k1");
+    r.register("b", undefined, "k2");
+    const cleared = r.revalidateAutoWakeKeys(null);
+    expect(cleared.map((c) => c.name).sort()).toEqual(["a", "b"]);
+    expect(r.get("a")?.autoWakeKey).toBeUndefined();
+    expect(r.get("b")?.autoWakeKey).toBeUndefined();
+  });
+
+  it("re-registering with autoWakeKey: null clears a previously-set key", () => {
+    const { logger } = makeLogger();
+    const r = new SessionRegistry(join(dir, "r.json"), logger);
+    const { rawToken } = r.register("frontend", undefined, "claude-inbox");
+    expect(r.get("frontend")?.autoWakeKey).toBe("claude-inbox");
+    r.register("frontend", rawToken, null);
+    expect(r.get("frontend")?.autoWakeKey).toBeUndefined();
+  });
+
+  it("re-registering without autoWakeKey argument preserves the existing key", () => {
+    const { logger } = makeLogger();
+    const r = new SessionRegistry(join(dir, "r.json"), logger);
+    const { rawToken } = r.register("frontend", undefined, "claude-inbox");
+    r.register("frontend", rawToken);
+    expect(r.get("frontend")?.autoWakeKey).toBe("claude-inbox");
+  });
+
+  it("re-registering resets wake state (debounce + counters)", () => {
+    const { logger } = makeLogger();
+    const r = new SessionRegistry(join(dir, "r.json"), logger);
+    const { rawToken } = r.register("frontend", undefined, "claude-inbox");
+    r.tryConsumeWakeWindow("frontend", Date.now(), 1000);
+    r.incrementWakeCounter("frontend", "dispatched");
+    expect(r.getWakeState("frontend").wakesDispatched).toBe(1);
+    expect(r.getWakeState("frontend").lastDispatchedAt).toBeDefined();
+
+    r.register("frontend", rawToken);
+    const fresh = r.getWakeState("frontend");
+    expect(fresh.wakesDispatched).toBe(0);
+    expect(fresh.wakesSuppressed).toBe(0);
+    expect(fresh.wakesFailed).toBe(0);
+    expect(fresh.lastDispatchedAt).toBeUndefined();
+  });
+});

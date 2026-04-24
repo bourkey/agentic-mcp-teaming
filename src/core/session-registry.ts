@@ -16,6 +16,8 @@ export interface SessionEntry {
   registeredAt: string;
   lastSeenAt: string;
   unreadMessageIds: string[];
+  /** Opt-in allowlist key for auto-wake dispatch. Persisted to registry.json. */
+  autoWakeKey?: string;
 }
 
 export interface DrainResult {
@@ -26,6 +28,21 @@ export interface DrainResult {
 export interface RegisterResult {
   entry: SessionEntry;
   rawToken: string;
+}
+
+/**
+ * Per-session wake state held in-memory only. Never persisted to registry.json;
+ * resets to defaults on coordinator restart. Key is the session name.
+ */
+export interface WakeState {
+  lastDispatchedAt?: number;
+  wakesDispatched: number;
+  wakesSuppressed: number;
+  wakesFailed: number;
+}
+
+function freshWakeState(): WakeState {
+  return { wakesDispatched: 0, wakesSuppressed: 0, wakesFailed: 0 };
 }
 
 export class RegistryError extends Error {
@@ -50,6 +67,7 @@ function nowIso(): string {
 
 export class SessionRegistry {
   private readonly sessions = new Map<string, SessionEntry>();
+  private readonly wakeStates = new Map<string, WakeState>();
   private readonly locks = new Map<string, Promise<unknown>>();
   private readonly path: string;
   private readonly logger: Logger;
@@ -91,7 +109,11 @@ export class SessionRegistry {
     return this.withLock(first, () => this.withLock(second, fn));
   }
 
-  register(name: string, priorSessionToken?: string): RegisterResult {
+  register(
+    name: string,
+    priorSessionToken?: string,
+    autoWakeKey?: string | null
+  ): RegisterResult {
     if (!SESSION_NAME_REGEX.test(name)) {
       throw new RegistryError("invalid_session_name", `name '${name}' does not match required pattern`);
     }
@@ -135,6 +157,19 @@ export class SessionRegistry {
     const tokenHash = sha256Hex(rawToken);
     const now = nowIso();
 
+    // autoWakeKey semantics:
+    //   undefined → preserve existing (on re-register) or leave unset (on fresh)
+    //   null      → clear
+    //   string    → set (validation is handler-side, not here)
+    let resolvedAutoWakeKey: string | undefined;
+    if (autoWakeKey === null) {
+      resolvedAutoWakeKey = undefined;
+    } else if (autoWakeKey === undefined) {
+      resolvedAutoWakeKey = existing?.autoWakeKey;
+    } else {
+      resolvedAutoWakeKey = autoWakeKey;
+    }
+
     const entry: SessionEntry =
       existing !== undefined
         ? {
@@ -143,6 +178,7 @@ export class SessionRegistry {
             registeredAt: existing.registeredAt,
             lastSeenAt: now,
             unreadMessageIds: existing.unreadMessageIds,
+            ...(resolvedAutoWakeKey !== undefined ? { autoWakeKey: resolvedAutoWakeKey } : {}),
           }
         : {
             name,
@@ -150,9 +186,16 @@ export class SessionRegistry {
             registeredAt: now,
             lastSeenAt: now,
             unreadMessageIds: [],
+            ...(resolvedAutoWakeKey !== undefined ? { autoWakeKey: resolvedAutoWakeKey } : {}),
           };
 
     this.sessions.set(name, entry);
+
+    // Re-registration resets the wake state (fresh debounce window, counters at
+    // zero) because a new bearer of the session name should not inherit the
+    // previous bearer's cadence. Fresh registrations also start at zero.
+    this.wakeStates.set(name, freshWakeState());
+
     return { entry, rawToken };
   }
 
@@ -199,12 +242,14 @@ export class SessionRegistry {
       registeredAt: entry.registeredAt,
       lastSeenAt: entry.lastSeenAt,
       unreadMessageIds: [...entry.unreadMessageIds],
+      ...(entry.autoWakeKey !== undefined ? { autoWakeKey: entry.autoWakeKey } : {}),
     };
   }
 
   restoreEntry(name: string, snapshot: SessionEntry | undefined): void {
     if (snapshot === undefined) {
       this.sessions.delete(name);
+      this.wakeStates.delete(name);
     } else {
       this.sessions.set(name, {
         name: snapshot.name,
@@ -212,8 +257,73 @@ export class SessionRegistry {
         registeredAt: snapshot.registeredAt,
         lastSeenAt: snapshot.lastSeenAt,
         unreadMessageIds: [...snapshot.unreadMessageIds],
+        ...(snapshot.autoWakeKey !== undefined ? { autoWakeKey: snapshot.autoWakeKey } : {}),
       });
     }
+  }
+
+  /**
+   * Read the per-session wake state. Returns a fresh zero-initialised entry if
+   * the session has no runtime state yet (e.g. freshly loaded from disk and
+   * never touched). Intended for the wakeDispatcher; not used by the bus itself.
+   */
+  getWakeState(name: string): WakeState {
+    let state = this.wakeStates.get(name);
+    if (state === undefined) {
+      state = freshWakeState();
+      this.wakeStates.set(name, state);
+    }
+    return state;
+  }
+
+  /**
+   * Atomic check-and-set for the per-recipient debounce window. MUST be called
+   * inside `withLock(name)` by the caller — no internal locking. Returns true
+   * if the caller should proceed with a wake dispatch (and has "taken" the
+   * window by setting `lastDispatchedAt` to `now`); false if suppressed.
+   *
+   * Writing the timestamp BEFORE the async dispatch starts closes the
+   * same-tick race: a concurrent invocation inside the same mutex window will
+   * observe the updated timestamp and suppress.
+   */
+  tryConsumeWakeWindow(name: string, now: number, debounceMs: number): boolean {
+    const state = this.getWakeState(name);
+    if (state.lastDispatchedAt !== undefined && now - state.lastDispatchedAt < debounceMs) {
+      return false;
+    }
+    state.lastDispatchedAt = now;
+    return true;
+  }
+
+  incrementWakeCounter(name: string, which: "dispatched" | "suppressed" | "failed"): void {
+    const state = this.getWakeState(name);
+    if (which === "dispatched") state.wakesDispatched += 1;
+    else if (which === "suppressed") state.wakesSuppressed += 1;
+    else state.wakesFailed += 1;
+  }
+
+  /**
+   * Revalidate every persisted `autoWakeKey` against a currently-loaded
+   * allowlist. Called once at startup after `load()`, with the allowlist keys
+   * from `peerBus.autoWake.allowedCommands` (or `null` if auto-wake is
+   * disabled coordinator-wide). Returns the list of entries whose stored key
+   * was removed so the caller can log a startup warn.
+   *
+   * Does NOT persist the cleared entries back to disk; the next persist() in
+   * the normal course of operation will do that. Keeping the load path
+   * read-only is deliberate — registry.json is rewritten often enough that
+   * stale keys will naturally clear within a session.
+   */
+  revalidateAutoWakeKeys(allowlist: Set<string> | null): Array<{ name: string; removedKey: string }> {
+    const cleared: Array<{ name: string; removedKey: string }> = [];
+    for (const entry of this.sessions.values()) {
+      if (entry.autoWakeKey === undefined) continue;
+      if (allowlist === null || !allowlist.has(entry.autoWakeKey)) {
+        cleared.push({ name: entry.name, removedKey: entry.autoWakeKey });
+        delete entry.autoWakeKey;
+      }
+    }
+    return cleared;
   }
 
   /**
@@ -358,6 +468,9 @@ export class SessionRegistry {
         registeredAt: e.registeredAt,
         lastSeenAt: e.lastSeenAt,
         unreadMessageIds: e.unreadMessageIds.filter((x): x is string => typeof x === "string"),
+        ...(typeof e.autoWakeKey === "string" && e.autoWakeKey.length > 0
+          ? { autoWakeKey: e.autoWakeKey }
+          : {}),
       };
       this.sessions.set(key, cleaned);
     }

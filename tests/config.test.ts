@@ -211,3 +211,248 @@ describe("peerBus config block", () => {
     }
   });
 });
+
+describe("peerBus.autoWake schema — task 1.5-1.10", () => {
+  it("loads a valid autoWake block with defaults", async () => {
+    await setup();
+    try {
+      const path = await writeConfig("autowake-valid.json", {
+        toolAllowlist: [],
+        peerBus: {
+          enabled: true,
+          autoWake: {
+            allowedCommands: { "claude-inbox": "/opsx:peer-inbox" },
+          },
+        },
+      });
+      const config = loadConfig(path);
+      expect(config.peerBus?.autoWake?.allowedCommands["claude-inbox"]).toBe("/opsx:peer-inbox");
+      expect(config.peerBus?.autoWake?.debounceMs).toBe(1000);
+      expect(config.peerBus?.autoWake?.allowedPaneCommands).toEqual(["claude", "bash", "zsh", "sh"]);
+    } finally {
+      await teardown();
+    }
+  });
+
+  it("rejects unknown fields under peerBus.autoWake via .strict()", async () => {
+    await setup();
+    try {
+      const path = await writeConfig("autowake-unknown.json", {
+        toolAllowlist: [],
+        peerBus: {
+          enabled: true,
+          autoWake: {
+            allowedCommands: { "k": "/v" },
+            retry: true,
+          },
+        },
+      });
+      expect(() => loadConfig(path)).toThrow(/retry/);
+    } finally {
+      await teardown();
+    }
+  });
+
+  it("rejects defaultCommand pointing at a missing key", async () => {
+    await setup();
+    try {
+      const path = await writeConfig("autowake-dangling-default.json", {
+        toolAllowlist: [],
+        peerBus: {
+          enabled: true,
+          autoWake: {
+            allowedCommands: { "present": "/ok" },
+            defaultCommand: "missing",
+          },
+        },
+      });
+      expect(() => loadConfig(path)).toThrow(/defaultCommand.*missing/);
+    } finally {
+      await teardown();
+    }
+  });
+
+  it("rejects empty-string allowedCommands value", async () => {
+    await setup();
+    try {
+      const path = await writeConfig("autowake-empty-value.json", {
+        toolAllowlist: [],
+        peerBus: { enabled: true, autoWake: { allowedCommands: { "key-1": "" } } },
+      });
+      expect(() => loadConfig(path)).toThrow(/key-1.*non-empty/);
+    } finally {
+      await teardown();
+    }
+  });
+
+  it("rejects whitespace-only allowedCommands value", async () => {
+    await setup();
+    try {
+      const path = await writeConfig("autowake-ws-value.json", {
+        toolAllowlist: [],
+        peerBus: { enabled: true, autoWake: { allowedCommands: { "key-1": "   " } } },
+      });
+      expect(() => loadConfig(path)).toThrow(/key-1.*non-empty/);
+    } finally {
+      await teardown();
+    }
+  });
+
+  it("rejects ANSI escape in allowedCommands value", async () => {
+    await setup();
+    try {
+      const path = await writeConfig("autowake-ansi.json", {
+        toolAllowlist: [],
+        peerBus: { enabled: true, autoWake: { allowedCommands: { "key-1": "/opsx:inbox\x1b[31m" } } },
+      });
+      expect(() => loadConfig(path)).toThrow(/key-1.*disallowed byte/);
+    } finally {
+      await teardown();
+    }
+  });
+
+  it("rejects newline in allowedCommands value", async () => {
+    await setup();
+    try {
+      const path = await writeConfig("autowake-newline.json", {
+        toolAllowlist: [],
+        peerBus: { enabled: true, autoWake: { allowedCommands: { "key-1": "/opsx:inbox\narg" } } },
+      });
+      expect(() => loadConfig(path)).toThrow(/key-1.*disallowed byte/);
+    } finally {
+      await teardown();
+    }
+  });
+
+  it("rejects carriage return in allowedCommands value", async () => {
+    await setup();
+    try {
+      const path = await writeConfig("autowake-cr.json", {
+        toolAllowlist: [],
+        peerBus: { enabled: true, autoWake: { allowedCommands: { "key-1": "/opsx:inbox\rarg" } } },
+      });
+      expect(() => loadConfig(path)).toThrow(/key-1.*disallowed byte/);
+    } finally {
+      await teardown();
+    }
+  });
+
+  it("rejects oversize allowedCommands value", async () => {
+    await setup();
+    try {
+      const oversize = "a".repeat(513);
+      const path = await writeConfig("autowake-big.json", {
+        toolAllowlist: [],
+        peerBus: { enabled: true, autoWake: { allowedCommands: { "key-1": oversize } } },
+      });
+      expect(() => loadConfig(path)).toThrow(/key-1.*exceeds 512/);
+    } finally {
+      await teardown();
+    }
+  });
+
+  it("accepts 512-byte allowedCommands value at the boundary", async () => {
+    await setup();
+    try {
+      const atBoundary = "a".repeat(512);
+      const path = await writeConfig("autowake-boundary.json", {
+        toolAllowlist: [],
+        peerBus: { enabled: true, autoWake: { allowedCommands: { "k": atBoundary } } },
+      });
+      const config = loadConfig(path);
+      expect(config.peerBus?.autoWake?.allowedCommands["k"]).toHaveLength(512);
+    } finally {
+      await teardown();
+    }
+  });
+
+  it("accepts empty allowedCommands object (runtime-rejected elsewhere)", async () => {
+    await setup();
+    try {
+      const path = await writeConfig("autowake-empty-map.json", {
+        toolAllowlist: [],
+        peerBus: { enabled: true, autoWake: { allowedCommands: {} } },
+      });
+      const config = loadConfig(path);
+      expect(config.peerBus?.autoWake?.allowedCommands).toEqual({});
+    } finally {
+      await teardown();
+    }
+  });
+
+  it("config without peerBus.autoWake block yields autoWake === undefined", async () => {
+    await setup();
+    try {
+      const path = await writeConfig("no-autowake.json", {
+        toolAllowlist: [],
+        peerBus: { enabled: true },
+      });
+      const config = loadConfig(path);
+      expect(config.peerBus?.autoWake).toBeUndefined();
+    } finally {
+      await teardown();
+    }
+  });
+
+  it("rejects tab character in allowedCommands value", async () => {
+    await setup();
+    try {
+      const path = await writeConfig("autowake-tab.json", {
+        toolAllowlist: [],
+        peerBus: { enabled: true, autoWake: { allowedCommands: { "k": "/v\targ" } } },
+      });
+      expect(() => loadConfig(path)).toThrow(/k.*disallowed byte/);
+    } finally {
+      await teardown();
+    }
+  });
+
+  it("rejects DEL (0x7F) in allowedCommands value", async () => {
+    await setup();
+    try {
+      const path = await writeConfig("autowake-del.json", {
+        toolAllowlist: [],
+        peerBus: { enabled: true, autoWake: { allowedCommands: { "k": "/v\x7f" } } },
+      });
+      expect(() => loadConfig(path)).toThrow(/k.*disallowed byte/);
+    } finally {
+      await teardown();
+    }
+  });
+
+  it("accepts '~' (last printable ASCII) in allowedCommands value", async () => {
+    await setup();
+    try {
+      const path = await writeConfig("autowake-tilde.json", {
+        toolAllowlist: [],
+        peerBus: { enabled: true, autoWake: { allowedCommands: { "k": "/v~" } } },
+      });
+      const config = loadConfig(path);
+      expect(config.peerBus?.autoWake?.allowedCommands["k"]).toBe("/v~");
+    } finally {
+      await teardown();
+    }
+  });
+
+  it("accepts custom debounceMs and allowedPaneCommands", async () => {
+    await setup();
+    try {
+      const path = await writeConfig("autowake-custom.json", {
+        toolAllowlist: [],
+        peerBus: {
+          enabled: true,
+          autoWake: {
+            allowedCommands: { "k": "/v" },
+            debounceMs: 2500,
+            allowedPaneCommands: ["fish", "bash"],
+          },
+        },
+      });
+      const config = loadConfig(path);
+      expect(config.peerBus?.autoWake?.debounceMs).toBe(2500);
+      expect(config.peerBus?.autoWake?.allowedPaneCommands).toEqual(["fish", "bash"]);
+    } finally {
+      await teardown();
+    }
+  });
+});

@@ -13,7 +13,7 @@
   ],
   "scripts": {
     "start": "tsx src/index.ts",
-    "serve": "tsx src/index.ts serve",
+    "serve": "bash scripts/clean-stale-sessions.sh && tsx src/index.ts serve",
     "build": "tsc && chmod +x dist/index.js",
     "test": "vitest run",
     "test:watch": "vitest",

@@ -33,3 +33,17 @@ yarn-error.log
 # OpenSpec review artifacts (generated, not source)
 openspec/changes/*/review-summary.md
 openspec/changes/*/review-gate.lock
+
+# Agent / local scratch
+.agents/
+AGENTS.md
+
+# Python bytecode (from agent tooling)
+__pycache__/
+*.py[cod]
+
+# Local config backups
+mcp-config.json.bak-*
+
+# Sync tooling (not shipped to GTM mirror)
+sync-to-gtm.sh

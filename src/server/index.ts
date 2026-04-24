@@ -11,11 +11,16 @@ import {
   registerSessionTool,
   sendMessageTool,
   readMessagesTool,
+  RegisterSessionParams,
+  SendMessageParams,
+  ReadMessagesParams,
   type PeerBusContext,
 } from "./tools/peer-bus.js";
 import { MessageStore } from "../core/message-store.js";
 import { SessionRegistry } from "../core/session-registry.js";
 import { AuditLogger } from "../core/audit.js";
+import { WakeDispatcher } from "../core/wake-dispatcher.js";
+import { TmuxWakeBackend } from "../core/wake-backends/tmux.js";
 import { SessionManager } from "../core/session.js";
 import { ConsensusLoop } from "../core/consensus.js";
 import { AgentRegistry } from "../core/registry.js";
@@ -260,16 +265,56 @@ export function createCoordinatorServer(opts: CoordinatorServerOptions): McpServ
   // --- Peer bus tools (opt-in via peerBus.enabled) ---
 
   if (config.peerBus?.enabled === true && opts.peerBus !== undefined) {
+    const autoWake = config.peerBus.autoWake;
+    const peerRegistry = opts.peerBus.registry;
+    const peerLogger = opts.peerBus.logger;
+
+    // Revalidate persisted autoWakeKey values against the current allowlist.
+    // Entries whose key is no longer in config are cleared in-memory with a
+    // startup warn. registry.json is rewritten on next natural persist.
+    const allowlistSet = autoWake !== undefined
+      ? new Set(Object.keys(autoWake.allowedCommands))
+      : null;
+    const cleared = peerRegistry.revalidateAutoWakeKeys(allowlistSet);
+    for (const { name, removedKey } of cleared) {
+      peerLogger.warn("peer-bus: autoWakeKey cleared on load; key no longer in allowlist", {
+        session: name,
+        removedKey,
+      });
+    }
+
+    // Build the wake dispatcher only when auto-wake is configured. The
+    // dispatcher is optional on PeerBusContext — when absent, the live
+    // bus behaves exactly as before this change (passive notifier only).
+    let wakeDispatcher: WakeDispatcher | undefined;
+    if (autoWake !== undefined && Object.keys(autoWake.allowedCommands).length > 0) {
+      const backend = new TmuxWakeBackend({ allowedPaneCommands: autoWake.allowedPaneCommands });
+      wakeDispatcher = new WakeDispatcher({
+        registry: peerRegistry,
+        backend,
+        logger: peerLogger,
+        audit: {
+          log: (entry) => {
+            logger.log({ type: "tool_call", sessionId: session.get().sessionId, ...entry });
+          },
+        },
+        allowedCommands: autoWake.allowedCommands,
+        debounceMs: autoWake.debounceMs,
+      });
+    }
+
     const peerCtx: PeerBusContext = {
-      registry: opts.peerBus.registry,
+      registry: peerRegistry,
       store: opts.peerBus.store,
       notifierConfig: config.peerBus.notifier,
-      logger: opts.peerBus.logger,
+      logger: peerLogger,
       audit: {
         log: (entry) => {
           logger.log({ type: "tool_call", sessionId: session.get().sessionId, ...entry });
         },
       },
+      ...(autoWake !== undefined ? { autoWakeConfig: autoWake } : {}),
+      ...(wakeDispatcher !== undefined ? { wakeDispatcher } : {}),
     };
 
     const allowlist = new Set(config.toolAllowlist);
@@ -277,10 +322,7 @@ export function createCoordinatorServer(opts: CoordinatorServerOptions): McpServ
     if (allowlist.has("register_session")) {
       server.tool(
         "register_session",
-        {
-          name: z.string(),
-          priorSessionToken: z.string().optional(),
-        },
+        RegisterSessionParams.shape,
         async (params) => registerSessionTool(peerCtx, params),
       );
     }
@@ -288,13 +330,7 @@ export function createCoordinatorServer(opts: CoordinatorServerOptions): McpServ
     if (allowlist.has("send_message")) {
       server.tool(
         "send_message",
-        {
-          sessionToken: z.string(),
-          to: z.string(),
-          kind: z.enum(["workflow-event", "chat", "request", "response"]),
-          body: z.unknown(),
-          replyTo: z.string().optional(),
-        },
+        SendMessageParams.shape,
         async (params) => sendMessageTool(peerCtx, params),
       );
     }
@@ -302,9 +338,7 @@ export function createCoordinatorServer(opts: CoordinatorServerOptions): McpServ
     if (allowlist.has("read_messages")) {
       server.tool(
         "read_messages",
-        {
-          sessionToken: z.string(),
-        },
+        ReadMessagesParams.shape,
         async (params) => readMessagesTool(peerCtx, params),
       );
     }
