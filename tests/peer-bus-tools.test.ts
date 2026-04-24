@@ -413,3 +413,137 @@ describe("readMessagesTool", () => {
     expect(params["hasMore"]).toBe(false);
   });
 });
+
+describe("registerSessionTool: autoWakeKey validation", () => {
+  const ALLOWLIST = { "claude-inbox": "/opsx:peer-inbox", "codex-inbox": "peer-inbox" };
+
+  it("persists autoWakeKey on the registry entry when valid", async () => {
+    const ctx = makeContext({
+      autoWakeConfig: { allowedCommands: ALLOWLIST, debounceMs: 1000, allowedPaneCommands: ["bash"] },
+    });
+    const result = await registerSessionTool(ctx, {
+      name: "frontend",
+      autoWakeKey: "claude-inbox",
+    });
+    parseSuccess(result);
+    expect(ctx.registry.get("frontend")?.autoWakeKey).toBe("claude-inbox");
+  });
+
+  it("rejects format-invalid autoWakeKey without echoing input", async () => {
+    const ctx = makeContext({
+      autoWakeConfig: { allowedCommands: ALLOWLIST, debounceMs: 1000, allowedPaneCommands: ["bash"] },
+    });
+    const rejected = "not valid with spaces\nand newlines";
+    const result = await registerSessionTool(ctx, { name: "frontend", autoWakeKey: rejected });
+    const err = parseError(result);
+    expect(err.error).toBe("invalid_auto_wake_key");
+    // Must NOT echo the submitted value
+    expect(err.message).not.toContain("not valid with spaces");
+    expect(err.message).not.toContain("\n");
+  });
+
+  it("rejects oversize autoWakeKey via regex (>64 chars)", async () => {
+    const ctx = makeContext({
+      autoWakeConfig: { allowedCommands: ALLOWLIST, debounceMs: 1000, allowedPaneCommands: ["bash"] },
+    });
+    const over = "a".repeat(65);
+    const result = await registerSessionTool(ctx, { name: "frontend", autoWakeKey: over });
+    const err = parseError(result);
+    expect(err.error).toBe("invalid_auto_wake_key");
+    expect(err.message).not.toContain(over);
+  });
+
+  it("rejects well-formed unknown key without echoing rejected AND without enumerating accepted keys", async () => {
+    const ctx = makeContext({
+      autoWakeConfig: { allowedCommands: ALLOWLIST, debounceMs: 1000, allowedPaneCommands: ["bash"] },
+    });
+    const result = await registerSessionTool(ctx, {
+      name: "frontend",
+      autoWakeKey: "nonexistent-key",
+    });
+    const err = parseError(result);
+    expect(err.error).toBe("invalid_auto_wake_key");
+    // Must NOT echo the rejected key
+    expect(err.message).not.toContain("nonexistent-key");
+    // Must NOT enumerate the operator's allowlist (register_session is
+    // reachable pre-auth — listing accepted keys is an enumeration vector).
+    expect(err.message).not.toContain("claude-inbox");
+    expect(err.message).not.toContain("codex-inbox");
+  });
+
+  it("rejects autoWakeKey when peerBus.autoWake block is absent", async () => {
+    const ctx = makeContext({ autoWakeConfig: undefined });
+    const result = await registerSessionTool(ctx, {
+      name: "frontend",
+      autoWakeKey: "claude-inbox",
+    });
+    const err = parseError(result);
+    expect(err.error).toBe("auto_wake_disabled");
+    expect(err.message).toBe("auto-wake is disabled on this coordinator");
+  });
+
+  it("rejects autoWakeKey when allowedCommands is empty", async () => {
+    const ctx = makeContext({
+      autoWakeConfig: { allowedCommands: {}, debounceMs: 1000, allowedPaneCommands: ["bash"] },
+    });
+    const result = await registerSessionTool(ctx, {
+      name: "frontend",
+      autoWakeKey: "claude-inbox",
+    });
+    const err = parseError(result);
+    expect(err.error).toBe("auto_wake_disabled");
+  });
+
+  it("autoWakeKey: null with defaultCommand configured resolves to default", async () => {
+    const ctx = makeContext({
+      autoWakeConfig: {
+        allowedCommands: ALLOWLIST,
+        defaultCommand: "claude-inbox",
+        debounceMs: 1000,
+        allowedPaneCommands: ["bash"],
+      },
+    });
+    const result = await registerSessionTool(ctx, { name: "frontend", autoWakeKey: null });
+    parseSuccess(result);
+    expect(ctx.registry.get("frontend")?.autoWakeKey).toBe("claude-inbox");
+  });
+
+  it("autoWakeKey: null without defaultCommand is rejected", async () => {
+    const ctx = makeContext({
+      autoWakeConfig: { allowedCommands: ALLOWLIST, debounceMs: 1000, allowedPaneCommands: ["bash"] },
+    });
+    const result = await registerSessionTool(ctx, { name: "frontend", autoWakeKey: null });
+    const err = parseError(result);
+    expect(err.error).toBe("invalid_auto_wake_key");
+    expect(err.message).toContain("defaultCommand");
+  });
+
+  it("register without autoWakeKey leaves registry entry unchanged (back-compat)", async () => {
+    const ctx = makeContext({
+      autoWakeConfig: { allowedCommands: ALLOWLIST, debounceMs: 1000, allowedPaneCommands: ["bash"] },
+    });
+    await registerSessionTool(ctx, { name: "frontend" });
+    expect(ctx.registry.get("frontend")?.autoWakeKey).toBeUndefined();
+  });
+
+  it("rejects empty-string autoWakeKey (min 1 char)", async () => {
+    const ctx = makeContext({
+      autoWakeConfig: { allowedCommands: ALLOWLIST, debounceMs: 1000, allowedPaneCommands: ["bash"] },
+    });
+    const result = await registerSessionTool(ctx, { name: "frontend", autoWakeKey: "" });
+    const err = parseError(result);
+    expect(err.error).toBe("invalid_auto_wake_key");
+  });
+
+  it("audit log for register with autoWakeKey redacts the value", async () => {
+    const { audit, entries } = makeAuditor();
+    const ctx = makeContext({
+      audit,
+      autoWakeConfig: { allowedCommands: ALLOWLIST, debounceMs: 1000, allowedPaneCommands: ["bash"] },
+    });
+    await registerSessionTool(ctx, { name: "a", autoWakeKey: "claude-inbox" });
+    const entry = entries.find((e) => e["tool"] === "register_session")!;
+    const params = entry["params"] as Record<string, unknown>;
+    expect(params["autoWakeKey"]).toBe("<present>");
+  });
+});

@@ -46,6 +46,9 @@ The `run-review-gate` skill (`.claude/skills/run-review-gate/SKILL.md`) handles 
 - **Authentication iterates every entry** with `timingSafeEqual` against a 32-byte zero sentinel for empty-tokenHash entries. No early return, no short-circuit — those are timing oracles
 - **Envelope rendering** strips XML 1.0 illegal control chars before XML-escaping both body and attribute values — this is the only place peer content gets serialised to an envelope
 - **POSIX filesystem required** for `coordinator.lock` (`O_EXCL|O_CREAT` must be atomic). NFS-pre-v3 and some overlay filesystems are unsupported
+- **Auto-wake injection surface** — `peerBus.autoWake.allowedCommands` is the authoritative boundary for any string that the coordinator types into a recipient tmux pane via `send-keys`. `tmux send-keys -l` prevents tmux from reinterpreting the payload as key bindings but does NOT strip terminal control sequences; the config-schema value scrub in `src/config.ts` (no empty / control / newline / non-ASCII-printable / oversize) is the real mitigation. Never relax the Zod `.refine()` without rethinking this boundary.
+- **Sender input never reaches send-keys argv** — no field of a `send_message` call (body, kind, replyTo, messageId, metadata, sender identity, headers) ever flows into the `execFile("tmux", ["send-keys", ...])` arguments. The argv is derived only from the resolved allowlist entry and the recipient's registered name.
+- **`wake_*` audit event family** — entries MUST contain only `{ target, commandKey, messageId, ... }` plus event-specific fields. The resolved command string, session tokens, tokenHash, and any `mcp-config.json` fragment are banned from every `wake_*` entry and from the associated warn log. `commandKey` is the only allowlist-linked identifier that ever lands in audit or log.
 
 ## Testing conventions
 

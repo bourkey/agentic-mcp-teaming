@@ -415,11 +415,74 @@ At startup, reconciliation verifies each unread `messageId` both exists in the l
 
 When `peerBus.notifier.tmuxEnabled: true`, the coordinator calls `tmux display-message` and `tmux set-window-option` on the recipient's tmux window after every successful send. Substituted values are scrubbed of characters that tmux interprets as format-language (`# ` backtick ` $ ; & | \n \r`). The format string itself is validated at config load against the same character set. Subprocess failures are logged as warnings and never propagate to the `send_message` caller; the notifier fires AFTER the per-session mutexes are released, so notifier latency cannot delay subsequent sends.
 
+### Making your Claude Code session peer-reactive (auto-wake)
+
+The passive notifier flashes a window-bar flag, but a Claude Code session that has no active turn still won't see the new message — there's no background poll loop in a turn-based agent. Two composable mechanisms solve this:
+
+1. **`Stop` hook drains the inbox on turn boundaries.** Add a hook in the consumer's `.claude/settings.json` that runs `coordinator read --wrap-for-prompt` when a turn ends. If the output is non-empty, the hook blocks the stop with the peer-inbox content as continuation context; Claude picks up the pending work before going idle.
+2. **Auto-wake injects a pre-declared command into truly-idle panes.** When configured, the coordinator types a short allowlisted command into the recipient's tmux pane (via `tmux send-keys`) the moment a message arrives. Claude Code receives this as a fresh user prompt and runs a turn.
+
+Both compose cleanly: `read_messages` is idempotent-on-drain (unread list empties on first read; the second call returns nothing). Whichever mechanism fires first drains the inbox; the other is a no-op.
+
+#### Enabling auto-wake
+
+Add a `peerBus.autoWake` block to `mcp-config.json` (sibling of `peerBus.notifier`):
+
+```json
+{
+  "peerBus": {
+    "enabled": true,
+    "notifier": { "tmuxEnabled": true },
+    "autoWake": {
+      "allowedCommands": {
+        "claude-inbox": "/opsx:peer-inbox"
+      },
+      "debounceMs": 1000,
+      "allowedPaneCommands": ["claude", "bash", "zsh", "sh"]
+    }
+  }
+}
+```
+
+`allowedCommands` maps short keys to the exact strings typed into a recipient pane. Sessions opt in at registration time by passing their key name: `register_session({ name: "frontend", autoWakeKey: "claude-inbox" })` (or via `coordinator register --auto-wake claude-inbox` once the `coordinator-client-cli` CLI lands).
+
+A session that registers with `autoWakeKey: null` opts into whatever key the operator sets as `defaultCommand`. Absence of `autoWakeKey` is opt-out — back-compat with pre-auto-wake clients.
+
+#### Pane-state safety gate
+
+Before typing into any pane, the coordinator probes `tmux display-message '#{pane_current_command}'` and suppresses the wake if the result is not in `allowedPaneCommands`. This prevents keystroke injection into interactive prompts where a queued Enter could cause harm.
+
+Panes in any of these commands **will be suppressed** (default allowlist only contains the agent-runtime shells):
+
+- `sudo` (password prompt — typed text becomes password input)
+- `less` / `man` (pager — quote/search state interference)
+- `ssh` (host-key confirmation dialog)
+- `git` (during `git commit` with `$EDITOR` open)
+- a Claude Code permission prompt (the queued `Enter` auto-confirms)
+
+Fish, nushell, or custom wrappers? Add your shell name to `allowedPaneCommands`.
+
+#### What the audit log shows
+
+Every wake attempt appends one entry in the `wake_*` family to the audit log:
+
+- `wake_dispatched { status: "ok" }` — keystrokes were delivered.
+- `wake_dispatched { status: "failed", exitCode, signal }` — `tmux send-keys` failed (usually a missing target window); no retry.
+- `wake_suppressed { reason }` — dispatch skipped. `reason` is one of `"debounce"`, `"pane_state_unsafe"` (plus `currentCommand`), or `"key_no_longer_in_allowlist"`.
+
+None of these entries contains the resolved command string, session tokens, or tokenHash. The allowlist key (`commandKey`) is the only identifier that reaches the audit log.
+
+#### Security boundary
+
+`allowedCommands` values are the authoritative boundary for what gets typed into recipient panes. The coordinator validates each value at config load: no empty strings, no control characters, no newlines, no non-ASCII-printable bytes, max 512 bytes. `tmux send-keys -l` prevents tmux from reinterpreting the payload as key bindings, but **it does not strip terminal control sequences** — the config-schema scrub is the actual mitigation. No field of a triggering `send_message` call (body, messageId, sender identity, etc.) ever reaches the `send-keys` argv.
+
+Changing `allowedCommands` requires a coordinator restart; v1 does not hot-reload. Sessions that hold an allowlist key no longer present at startup get the field cleared and a warn logged.
+
 ### Known limitations
 
-- **Idle sessions don't auto-process messages.** MCP is pull-only. A receiver only sees new mail on its next `read_messages` tool call.
+- **Idle sessions that haven't opted into auto-wake don't auto-process messages.** MCP is pull-only. Enable auto-wake per above, or rely on a `Stop` hook that drains the inbox at turn boundaries.
 - **At-most-once delivery.** Reads drain; a lost response means lost messages.
-- **Coordinator restart invalidates all tokens.** Every client re-registers; unread lists survive.
+- **Coordinator restart invalidates all tokens.** Every client re-registers; unread lists survive. Auto-wake debounce windows and counters also reset to zero.
 - **Token recovery is manual** if a client loses its token while the coordinator keeps running. Operator must remove the registry entry offline or restart the coordinator.
 - **Mailbox pile-up** when a recipient dies without draining. Eventually produces `mailbox_full`; operator remediation is an offline registry edit.
 - **Disable MCP SDK verbose/debug logging in production** — it can leak request bodies including raw session tokens.

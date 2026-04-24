@@ -15,13 +15,28 @@ import {
 import { SESSION_NAME_REGEX, UUID_V4_REGEX } from "../../core/peer-bus-constants.js";
 import { fireTmuxNotifier } from "../../core/notifier-tmux.js";
 import type { Logger } from "../../core/logger.js";
-import type { PeerBusConfig } from "../../config.js";
+import type { PeerBusConfig, PeerBusAutoWakeConfig } from "../../config.js";
+import type { WakeDispatcher } from "../../core/wake-dispatcher.js";
 
 const PEER_KIND = z.enum(["workflow-event", "chat", "request", "response"]);
+
+const AUTO_WAKE_KEY_REGEX = /^[a-zA-Z0-9_-]{1,64}$/;
 
 export const RegisterSessionParams = z.object({
   name: z.string(),
   priorSessionToken: z.string().optional(),
+  /**
+   * Opt-in auto-wake. `undefined` = opt-out (default). `null` = opt-in to
+   * `peerBus.autoWake.defaultCommand`. A string = opt-in to that specific
+   * allowlist key. The regex constraint runs before any allowlist lookup so
+   * malformed input (ANSI, newlines, token-shaped strings) is rejected with a
+   * generic message that does NOT echo the submitted value.
+   */
+  autoWakeKey: z
+    .string()
+    .regex(AUTO_WAKE_KEY_REGEX, "invalid autoWakeKey format")
+    .nullable()
+    .optional(),
 });
 
 export const SendMessageParams = z.object({
@@ -44,6 +59,12 @@ export interface PeerBusContext {
   audit: PeerBusAuditor;
   /** Test hook: run notifier synchronously so tests can assert call count. */
   notifierFireAndAwait?: boolean;
+  /** Optional auto-wake config. Absent → auto-wake disabled coordinator-wide. */
+  autoWakeConfig?: PeerBusAutoWakeConfig;
+  /** Optional wake dispatcher. Only invoked when recipient has autoWakeKey set. */
+  wakeDispatcher?: WakeDispatcher;
+  /** Test hook: await the wake dispatch so tests can assert call argv. */
+  wakeFireAndAwait?: boolean;
 }
 
 export interface PeerBusAuditor {
@@ -101,6 +122,7 @@ function hashBody(body: unknown): string {
 function mapRegisterZodError(path: ReadonlyArray<string | number>): string {
   const root = path[0];
   if (root === "priorSessionToken") return "invalid_prior_session_token_required";
+  if (root === "autoWakeKey") return "invalid_auto_wake_key";
   return "invalid_session_name";
 }
 
@@ -124,13 +146,14 @@ export async function registerSessionTool(
       issue?.message ?? "invalid params"
     );
   }
-  const { name, priorSessionToken } = parsed.data;
+  const { name, priorSessionToken, autoWakeKey } = parsed.data;
 
   ctx.audit.log({
     tool: "register_session",
     params: {
       name,
       priorSessionToken: priorSessionToken === undefined ? undefined : "<redacted>",
+      autoWakeKey: autoWakeKey === undefined ? undefined : autoWakeKey === null ? null : "<present>",
     },
   });
 
@@ -138,10 +161,47 @@ export async function registerSessionTool(
     return errorResult("invalid_session_name", "name must match ^[a-z0-9][a-z0-9-]{0,62}$");
   }
 
+  // Auto-wake validation (handler-stage — the dynamic enum cannot reject when the
+  // allowlist is absent or empty; the Zod schema only enforces the format regex).
+  let resolvedAutoWakeKey: string | null | undefined = autoWakeKey;
+  if (autoWakeKey !== undefined) {
+    const allowlist = ctx.autoWakeConfig?.allowedCommands;
+    if (allowlist === undefined || Object.keys(allowlist).length === 0) {
+      return errorResult(
+        "auto_wake_disabled",
+        "auto-wake is disabled on this coordinator"
+      );
+    }
+    if (autoWakeKey === null) {
+      // Opt-in to default
+      const def = ctx.autoWakeConfig?.defaultCommand;
+      if (def === undefined) {
+        return errorResult(
+          "invalid_auto_wake_key",
+          "autoWakeKey: null requires peerBus.autoWake.defaultCommand to be configured"
+        );
+      }
+      resolvedAutoWakeKey = def;
+    } else {
+      // Explicit key — must exist in allowlist. Do NOT echo the rejected key
+      // and do NOT enumerate the accepted keys: `register_session` is reachable
+      // pre-auth (it is the bootstrap for auth), and listing every operator-
+      // configured allowlist key back to any caller is a one-shot enumeration
+      // vector. Operators needing to debug can read the loaded config directly.
+      if (!(autoWakeKey in allowlist)) {
+        return errorResult(
+          "invalid_auto_wake_key",
+          "autoWakeKey does not match any key in allowedCommands"
+        );
+      }
+      resolvedAutoWakeKey = autoWakeKey;
+    }
+  }
+
   return ctx.registry.withLock(name, async () => {
     const snapshot = ctx.registry.snapshotEntry(name);
     try {
-      const { entry, rawToken } = ctx.registry.register(name, priorSessionToken);
+      const { entry, rawToken } = ctx.registry.register(name, priorSessionToken, resolvedAutoWakeKey);
       try {
         await ctx.registry.persist();
       } catch (persistErr) {
@@ -322,7 +382,12 @@ export async function sendMessageTool(
     },
   });
 
-  // Fire-and-forget notifier after mutex release
+  // Fire-and-forget notifier after mutex release.
+  //
+  // The passive notifier (window-bar decoration) and the active wakeDispatcher
+  // (send-keys injection) are INDEPENDENT downstream paths. Neither depends on
+  // the other; both failures are absorbed so neither can cause `send_message`
+  // to fail.
   if (ctx.notifierConfig.tmuxEnabled) {
     const notifierPromise = fireTmuxNotifier({
       recipientName: to,
@@ -338,6 +403,28 @@ export async function sendMessageTool(
       notifierPromise.catch((err) => {
         ctx.logger.error("peer-bus: notifier promise rejected", { error: (err as Error).message });
       });
+    }
+  }
+
+  if (ctx.wakeDispatcher !== undefined) {
+    // WakeDispatcher.maybeDispatch is documented to never reject — it wraps
+    // the probe, send-keys, and audit sinks internally. If this catch ever
+    // fires, something has regressed that invariant; we deliberately do NOT
+    // log `err.message` because a future regression that embeds the resolved
+    // allowlist command (or a send-keys argv) into the error message would
+    // leak through here. The structured warns the dispatcher emits itself
+    // already carry everything operators need to triage a failed wake.
+    try {
+      const wakePromise = ctx.wakeDispatcher.maybeDispatch({ target: to, messageId });
+      if (ctx.wakeFireAndAwait === true) {
+        await wakePromise;
+      } else {
+        wakePromise.catch(() => {
+          ctx.logger.error("peer-bus: wake dispatcher promise rejected unexpectedly", {});
+        });
+      }
+    } catch {
+      ctx.logger.error("peer-bus: wake dispatcher threw synchronously", {});
     }
   }
 
