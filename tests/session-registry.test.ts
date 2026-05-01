@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { createHash } from "crypto";
 import { mkdtemp, rm, writeFile } from "fs/promises";
 import { tmpdir } from "os";
 import { join } from "path";
@@ -9,6 +10,8 @@ import {
 } from "../src/core/session-registry.js";
 import type { Logger } from "../src/core/logger.js";
 import type { PeerMessage } from "../src/core/message-store.js";
+
+const TEST_PANE_TOKEN = "test-pane-token";
 
 function makeLogger(): { logger: Logger; errors: Array<{ message: string; meta: Record<string, unknown> | undefined }>; warnings: Array<{ message: string; meta: Record<string, unknown> | undefined }> } {
   const errors: Array<{ message: string; meta: Record<string, unknown> | undefined }> = [];
@@ -35,7 +38,7 @@ describe("SessionRegistry.register", () => {
   it("creates a fresh entry and returns token", () => {
     const { logger } = makeLogger();
     const r = new SessionRegistry(join(dir, "r.json"), logger);
-    const { entry, rawToken } = r.register("frontend");
+    const { entry, rawToken } = r.register("frontend", TEST_PANE_TOKEN);
     expect(entry.name).toBe("frontend");
     expect(entry.unreadMessageIds).toEqual([]);
     expect(entry.tokenHash).toMatch(/^[a-f0-9]{64}$/);
@@ -50,17 +53,11 @@ describe("SessionRegistry.register", () => {
     expect(() => r.register("-leading-hyphen")).toThrow(RegistryError);
   });
 
-  it("rejects priorSessionToken on fresh registration", () => {
+  it("re-registration with matching paneToken issues new sessionToken", () => {
     const { logger } = makeLogger();
     const r = new SessionRegistry(join(dir, "r.json"), logger);
-    expect(() => r.register("frontend", "anything")).toThrow(RegistryError);
-  });
-
-  it("rotates token on re-registration with correct priorSessionToken", () => {
-    const { logger } = makeLogger();
-    const r = new SessionRegistry(join(dir, "r.json"), logger);
-    const first = r.register("frontend");
-    const second = r.register("frontend", first.rawToken);
+    const first = r.register("frontend", TEST_PANE_TOKEN);
+    const second = r.register("frontend", TEST_PANE_TOKEN);
     expect(second.rawToken).not.toBe(first.rawToken);
     expect(second.entry.registeredAt).toBe(first.entry.registeredAt);
     // Old token should no longer authenticate
@@ -68,39 +65,77 @@ describe("SessionRegistry.register", () => {
     expect(r.authenticate(second.rawToken)?.name).toBe("frontend");
   });
 
-  it("rejects re-registration without priorSessionToken on active name", () => {
+  it("rejects mismatched paneToken on active name", () => {
     const { logger } = makeLogger();
     const r = new SessionRegistry(join(dir, "r.json"), logger);
-    r.register("frontend");
+    r.register("frontend", "token-a");
     try {
-      r.register("frontend");
+      r.register("frontend", "token-b");
       throw new Error("should have thrown");
     } catch (err) {
       expect(err).toBeInstanceOf(RegistryError);
-      expect((err as RegistryError).code).toBe("invalid_prior_session_token_required");
+      expect((err as RegistryError).code).toBe("invalid_pane_token");
     }
   });
 
-  it("rejects re-registration with wrong priorSessionToken", () => {
+  it("rejects wrong paneToken on active entry", () => {
     const { logger } = makeLogger();
     const r = new SessionRegistry(join(dir, "r.json"), logger);
-    r.register("frontend");
+    r.register("frontend", "owner-token");
     try {
-      r.register("frontend", "wrongtoken");
+      r.register("frontend", "wrong-token");
       throw new Error("should have thrown");
     } catch (err) {
       expect(err).toBeInstanceOf(RegistryError);
-      expect((err as RegistryError).code).toBe("invalid_prior_session_token_required");
+      expect((err as RegistryError).code).toBe("invalid_pane_token");
     }
   });
 
-  it("accepts re-registration without priorSessionToken on empty-tokenHash entry", () => {
+  it("accepts registration against legacy entry without paneTokenHash", () => {
     const { logger } = makeLogger();
     const r = new SessionRegistry(join(dir, "r.json"), logger);
-    r.register("frontend");
-    r.clearTokenHashes();
-    const second = r.register("frontend");
+    (r as unknown as { sessions: Map<string, unknown> }).sessions.set("frontend", {
+      name: "frontend",
+      tokenHash: "",
+      registeredAt: new Date(0).toISOString(),
+      lastSeenAt: new Date(0).toISOString(),
+      unreadMessageIds: [],
+    });
+    const second = r.register("frontend", TEST_PANE_TOKEN);
     expect(second.entry.tokenHash).not.toBe("");
+  });
+
+  it("stores paneTokenHash as sha256 hex of the paneToken", () => {
+    const { logger } = makeLogger();
+    const r = new SessionRegistry(join(dir, "r.json"), logger);
+    const { entry } = r.register("frontend", TEST_PANE_TOKEN);
+    const expected = createHash("sha256").update(TEST_PANE_TOKEN).digest("hex");
+    expect(entry.paneTokenHash).toBe(expected);
+  });
+
+  it("re-registration with matching paneToken preserves unreadMessageIds", () => {
+    const { logger } = makeLogger();
+    const r = new SessionRegistry(join(dir, "r.json"), logger);
+    r.register("frontend", TEST_PANE_TOKEN);
+    r.addUnread("frontend", "m1");
+    r.addUnread("frontend", "m2");
+    r.register("frontend", TEST_PANE_TOKEN);
+    expect(r.get("frontend")?.unreadMessageIds).toEqual(["m1", "m2"]);
+  });
+
+  it("malformed lastSeenAt treats entry as within-TTL and rejects mismatched paneToken", () => {
+    const { logger } = makeLogger();
+    const r = new SessionRegistry(join(dir, "r.json"), logger);
+    (r as unknown as { sessions: Map<string, unknown> }).sessions.set("frontend", {
+      name: "frontend",
+      tokenHash: "",
+      paneTokenHash: createHash("sha256").update(TEST_PANE_TOKEN).digest("hex"),
+      registeredAt: "2026-01-01T00:00:00.000Z",
+      lastSeenAt: "not-a-date",
+      unreadMessageIds: [],
+    });
+    expect(() => r.register("frontend", "wrong-pane-token")).toThrow(RegistryError);
+    expect(() => r.register("frontend", TEST_PANE_TOKEN)).not.toThrow();
   });
 });
 
@@ -108,21 +143,21 @@ describe("SessionRegistry.authenticate", () => {
   it("returns matching entry for valid token", () => {
     const { logger } = makeLogger();
     const r = new SessionRegistry(join(dir, "r.json"), logger);
-    const { rawToken } = r.register("frontend");
+    const { rawToken } = r.register("frontend", TEST_PANE_TOKEN);
     expect(r.authenticate(rawToken)?.name).toBe("frontend");
   });
 
   it("returns null for invalid token", () => {
     const { logger } = makeLogger();
     const r = new SessionRegistry(join(dir, "r.json"), logger);
-    r.register("frontend");
+    r.register("frontend", TEST_PANE_TOKEN);
     expect(r.authenticate("bogus")).toBeNull();
   });
 
   it("empty-tokenHash entry never matches any presented token", () => {
     const { logger } = makeLogger();
     const r = new SessionRegistry(join(dir, "r.json"), logger);
-    const { rawToken } = r.register("frontend");
+    const { rawToken } = r.register("frontend", TEST_PANE_TOKEN);
     r.clearTokenHashes();
     expect(r.authenticate(rawToken)).toBeNull();
     expect(r.authenticate("")).toBeNull();
@@ -132,8 +167,8 @@ describe("SessionRegistry.authenticate", () => {
   it("iterates every entry — match at end is found", () => {
     const { logger } = makeLogger();
     const r = new SessionRegistry(join(dir, "r.json"), logger);
-    for (let i = 0; i < 20; i += 1) r.register(`s${i}`);
-    const last = r.register("target");
+    for (let i = 0; i < 20; i += 1) r.register(`s${i}`, TEST_PANE_TOKEN);
+    const last = r.register("target", TEST_PANE_TOKEN);
     expect(r.authenticate(last.rawToken)?.name).toBe("target");
   });
 });
@@ -149,7 +184,7 @@ describe("SessionRegistry.addUnread and drainUnread", () => {
   it("addUnread returns true up to cap, false beyond", () => {
     const { logger } = makeLogger();
     const r = new SessionRegistry(join(dir, "r.json"), logger);
-    r.register("frontend");
+    r.register("frontend", TEST_PANE_TOKEN);
     for (let i = 0; i < PEER_BUS_MAX_UNREAD; i += 1) {
       expect(r.addUnread("frontend", `m${i}`)).toBe(true);
     }
@@ -159,7 +194,7 @@ describe("SessionRegistry.addUnread and drainUnread", () => {
   it("drainUnread drains to maxBytes and returns hasMore", () => {
     const { logger } = makeLogger();
     const r = new SessionRegistry(join(dir, "r.json"), logger);
-    r.register("frontend");
+    r.register("frontend", TEST_PANE_TOKEN);
     const lookup = new Map<string, PeerMessage>();
     const wrapEnvelope = (m: PeerMessage): string =>
       `<peer-message from="${m.from}" kind="${m.kind}" messageId="${m.messageId}">${m.body as string}</peer-message>`;
@@ -180,7 +215,7 @@ describe("SessionRegistry.addUnread and drainUnread", () => {
   it("drainUnread empties mailbox when all fit", () => {
     const { logger } = makeLogger();
     const r = new SessionRegistry(join(dir, "r.json"), logger);
-    r.register("frontend");
+    r.register("frontend", TEST_PANE_TOKEN);
     const lookup = new Map<string, PeerMessage>();
     const wrapEnvelope = (m: PeerMessage): string => `[${m.messageId}]`;
     for (let i = 0; i < 3; i += 1) {
@@ -205,7 +240,7 @@ describe("SessionRegistry.addUnread and drainUnread", () => {
   it("drainUnread sorts by timestamp ascending", () => {
     const { logger } = makeLogger();
     const r = new SessionRegistry(join(dir, "r.json"), logger);
-    r.register("frontend");
+    r.register("frontend", TEST_PANE_TOKEN);
     const lookup = new Map<string, PeerMessage>();
     const wrapEnvelope = (m: PeerMessage): string => `[${m.messageId}]`;
     // Add out of order
@@ -269,7 +304,7 @@ describe("SessionRegistry persistence", () => {
     const { logger } = makeLogger();
     const path = join(dir, "r.json");
     const r1 = new SessionRegistry(path, logger);
-    const { rawToken } = r1.register("frontend");
+    const { rawToken } = r1.register("frontend", TEST_PANE_TOKEN);
     r1.addUnread("frontend", "m1");
     r1.addUnread("frontend", "m2");
     await r1.persist();
@@ -320,13 +355,58 @@ describe("SessionRegistry persistence", () => {
     expect(errors.length).toBeGreaterThan(0);
     expect(r.listNames()).toEqual([]);
   });
+
+  it("persist then load round-trips paneTokenHash, allowing re-registration with matching token", async () => {
+    const { logger } = makeLogger();
+    const path = join(dir, "r.json");
+    const r1 = new SessionRegistry(path, logger);
+    r1.register("frontend", TEST_PANE_TOKEN);
+    await r1.persist();
+
+    const r2 = new SessionRegistry(path, logger);
+    await r2.load();
+    const expected = createHash("sha256").update(TEST_PANE_TOKEN).digest("hex");
+    expect(r2.get("frontend")?.paneTokenHash).toBe(expected);
+    // Wrong paneToken rejected (entry is within TTL)
+    expect(() => r2.register("frontend", "wrong-pane-token")).toThrow(RegistryError);
+    // Correct paneToken accepted
+    expect(() => r2.register("frontend", TEST_PANE_TOKEN)).not.toThrow();
+  });
+
+  it("truncated paneTokenHash falls back to zero-sentinel and evicts past TTL", async () => {
+    const { logger } = makeLogger();
+    const path = join(dir, "r.json");
+    const staleDate = new Date(Date.now() - 700_000).toISOString();
+    await writeFile(path, JSON.stringify({
+      version: 1,
+      sessions: {
+        frontend: {
+          name: "frontend",
+          tokenHash: "",
+          paneTokenHash: "deadbeef", // 4 bytes — too short, falls back to ZERO_SENTINEL
+          registeredAt: staleDate,
+          lastSeenAt: staleDate,
+          unreadMessageIds: [],
+        },
+      },
+    }), "utf8");
+
+    const r = new SessionRegistry(path, logger);
+    await r.load();
+    expect(r.get("frontend")).toBeDefined();
+    // Entry is past TTL — any paneToken evicts and claims the name
+    const { entry } = r.register("frontend", TEST_PANE_TOKEN);
+    expect(entry.paneTokenHash).toBe(
+      createHash("sha256").update(TEST_PANE_TOKEN).digest("hex")
+    );
+  });
 });
 
 describe("SessionRegistry.reconcile", () => {
   it("drops orphaned ids (no corresponding message)", () => {
     const { logger } = makeLogger();
     const r = new SessionRegistry(join(dir, "r.json"), logger);
-    r.register("frontend");
+    r.register("frontend", TEST_PANE_TOKEN);
     r.addUnread("frontend", "orphan");
     const summary = r.reconcile(new Map());
     expect(summary.orphanedCount).toBe(1);
@@ -336,7 +416,7 @@ describe("SessionRegistry.reconcile", () => {
   it("drops misrouted ids (message.to !== owner)", () => {
     const { logger } = makeLogger();
     const r = new SessionRegistry(join(dir, "r.json"), logger);
-    r.register("frontend");
+    r.register("frontend", TEST_PANE_TOKEN);
     r.addUnread("frontend", "m1");
     const lookup = new Map<string, PeerMessage>();
     lookup.set("m1", { messageId: "m1", from: "a", to: "backend", kind: "chat", body: "", timestamp: "x" });
@@ -350,7 +430,7 @@ describe("Snapshot / restore unread", () => {
   it("snapshot captures a copy; restore sets it back", () => {
     const { logger } = makeLogger();
     const r = new SessionRegistry(join(dir, "r.json"), logger);
-    r.register("frontend");
+    r.register("frontend", TEST_PANE_TOKEN);
     r.addUnread("frontend", "m1");
     r.addUnread("frontend", "m2");
     const snap = r.snapshotUnread("frontend");
@@ -368,7 +448,7 @@ describe("SessionRegistry autoWakeKey persistence and revalidation", () => {
     const { logger } = makeLogger();
     const path = join(dir, "r.json");
     const r1 = new SessionRegistry(path, logger);
-    r1.register("frontend", undefined, "claude-inbox");
+    r1.register("frontend", TEST_PANE_TOKEN, "claude-inbox");
     await r1.persist();
 
     const r2 = new SessionRegistry(path, logger);
@@ -403,9 +483,9 @@ describe("SessionRegistry autoWakeKey persistence and revalidation", () => {
   it("revalidateAutoWakeKeys clears stale keys and reports what was cleared", () => {
     const { logger } = makeLogger();
     const r = new SessionRegistry(join(dir, "r.json"), logger);
-    r.register("a", undefined, "still-valid");
-    r.register("b", undefined, "removed-key");
-    r.register("c"); // no autoWakeKey
+    r.register("a", TEST_PANE_TOKEN, "still-valid");
+    r.register("b", TEST_PANE_TOKEN, "removed-key");
+    r.register("c", TEST_PANE_TOKEN); // no autoWakeKey
 
     const cleared = r.revalidateAutoWakeKeys(new Set(["still-valid", "other-valid"]));
     expect(cleared).toEqual([{ name: "b", removedKey: "removed-key" }]);
@@ -417,8 +497,8 @@ describe("SessionRegistry autoWakeKey persistence and revalidation", () => {
   it("revalidateAutoWakeKeys with null allowlist clears every stored key", () => {
     const { logger } = makeLogger();
     const r = new SessionRegistry(join(dir, "r.json"), logger);
-    r.register("a", undefined, "k1");
-    r.register("b", undefined, "k2");
+    r.register("a", TEST_PANE_TOKEN, "k1");
+    r.register("b", TEST_PANE_TOKEN, "k2");
     const cleared = r.revalidateAutoWakeKeys(null);
     expect(cleared.map((c) => c.name).sort()).toEqual(["a", "b"]);
     expect(r.get("a")?.autoWakeKey).toBeUndefined();
@@ -428,30 +508,30 @@ describe("SessionRegistry autoWakeKey persistence and revalidation", () => {
   it("re-registering with autoWakeKey: null clears a previously-set key", () => {
     const { logger } = makeLogger();
     const r = new SessionRegistry(join(dir, "r.json"), logger);
-    const { rawToken } = r.register("frontend", undefined, "claude-inbox");
+    r.register("frontend", TEST_PANE_TOKEN, "claude-inbox");
     expect(r.get("frontend")?.autoWakeKey).toBe("claude-inbox");
-    r.register("frontend", rawToken, null);
+    r.register("frontend", TEST_PANE_TOKEN, null);
     expect(r.get("frontend")?.autoWakeKey).toBeUndefined();
   });
 
   it("re-registering without autoWakeKey argument preserves the existing key", () => {
     const { logger } = makeLogger();
     const r = new SessionRegistry(join(dir, "r.json"), logger);
-    const { rawToken } = r.register("frontend", undefined, "claude-inbox");
-    r.register("frontend", rawToken);
+    r.register("frontend", TEST_PANE_TOKEN, "claude-inbox");
+    r.register("frontend", TEST_PANE_TOKEN);
     expect(r.get("frontend")?.autoWakeKey).toBe("claude-inbox");
   });
 
   it("re-registering resets wake state (debounce + counters)", () => {
     const { logger } = makeLogger();
     const r = new SessionRegistry(join(dir, "r.json"), logger);
-    const { rawToken } = r.register("frontend", undefined, "claude-inbox");
+    r.register("frontend", TEST_PANE_TOKEN, "claude-inbox");
     r.tryConsumeWakeWindow("frontend", Date.now(), 1000);
     r.incrementWakeCounter("frontend", "dispatched");
     expect(r.getWakeState("frontend").wakesDispatched).toBe(1);
     expect(r.getWakeState("frontend").lastDispatchedAt).toBeDefined();
 
-    r.register("frontend", rawToken);
+    r.register("frontend", TEST_PANE_TOKEN);
     const fresh = r.getWakeState("frontend");
     expect(fresh.wakesDispatched).toBe(0);
     expect(fresh.wakesSuppressed).toBe(0);

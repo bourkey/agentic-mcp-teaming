@@ -56,12 +56,14 @@ async function makeRegistry(): Promise<SessionRegistry> {
   return new SessionRegistry(join(dir, "registry.json"), logger);
 }
 
+const TEST_PANE_TOKEN = "test-pane-token";
+
 const ALLOWLIST = { "claude-inbox": "/opsx:peer-inbox" };
 
 describe("WakeDispatcher: opt-in gating", () => {
   it("is a no-op for recipients without autoWakeKey", async () => {
     const registry = await makeRegistry();
-    registry.register("main");
+    registry.register("main", TEST_PANE_TOKEN);
     const { backend, paneCalls, sendCalls } = makeBackend();
     const { audit, entries } = makeAuditor();
     const { logger } = makeLogger();
@@ -76,7 +78,7 @@ describe("WakeDispatcher: opt-in gating", () => {
 
   it("dispatches when recipient is opted in and pane is safe", async () => {
     const registry = await makeRegistry();
-    registry.register("main", undefined, "claude-inbox");
+    registry.register("main", TEST_PANE_TOKEN, "claude-inbox");
     const { backend, paneCalls, sendCalls } = makeBackend();
     const { audit, entries } = makeAuditor();
     const { logger } = makeLogger();
@@ -106,7 +108,7 @@ describe("WakeDispatcher: opt-in gating", () => {
 describe("WakeDispatcher: pane-state safety gate", () => {
   it("suppresses dispatch when pane is unsafe; emits wake_suppressed", async () => {
     const registry = await makeRegistry();
-    registry.register("main", undefined, "claude-inbox");
+    registry.register("main", TEST_PANE_TOKEN, "claude-inbox");
     const { backend, sendCalls } = makeBackend({
       isPaneStateSafe: async () => ({ safe: false, currentCommand: "sudo" }),
     });
@@ -127,7 +129,7 @@ describe("WakeDispatcher: pane-state safety gate", () => {
 
   it("does not update debounce on pane-unsafe so next message dispatches immediately", async () => {
     const registry = await makeRegistry();
-    registry.register("main", undefined, "claude-inbox");
+    registry.register("main", TEST_PANE_TOKEN, "claude-inbox");
     let firstCall = true;
     const { backend, sendCalls } = makeBackend({
       isPaneStateSafe: async () => {
@@ -150,7 +152,7 @@ describe("WakeDispatcher: pane-state safety gate", () => {
 describe("WakeDispatcher: stale allowlist key", () => {
   it("emits wake_suppressed { reason: 'key_no_longer_in_allowlist' } when the stored key is gone", async () => {
     const registry = await makeRegistry();
-    registry.register("main", undefined, "stale-key");
+    registry.register("main", TEST_PANE_TOKEN, "stale-key");
     const { backend, sendCalls } = makeBackend();
     const { audit, entries } = makeAuditor();
     const { logger } = makeLogger();
@@ -169,7 +171,7 @@ describe("WakeDispatcher: stale allowlist key", () => {
 describe("WakeDispatcher: debounce", () => {
   it("burst of 5 messages produces 1 dispatch and 4 suppressions", async () => {
     const registry = await makeRegistry();
-    registry.register("main", undefined, "claude-inbox");
+    registry.register("main", TEST_PANE_TOKEN, "claude-inbox");
     const { backend, sendCalls } = makeBackend();
     const { audit, entries } = makeAuditor();
     const { logger } = makeLogger();
@@ -189,8 +191,8 @@ describe("WakeDispatcher: debounce", () => {
 
   it("concurrent recipients do not block each other", async () => {
     const registry = await makeRegistry();
-    registry.register("main", undefined, "claude-inbox");
-    registry.register("backend", undefined, "claude-inbox");
+    registry.register("main", TEST_PANE_TOKEN, "claude-inbox");
+    registry.register("backend", TEST_PANE_TOKEN, "claude-inbox");
     const { backend, sendCalls } = makeBackend();
     const { audit } = makeAuditor();
     const { logger } = makeLogger();
@@ -207,7 +209,7 @@ describe("WakeDispatcher: debounce", () => {
 
   it("messages spaced beyond debounce window both dispatch", async () => {
     const registry = await makeRegistry();
-    registry.register("main", undefined, "claude-inbox");
+    registry.register("main", TEST_PANE_TOKEN, "claude-inbox");
     const { backend, sendCalls } = makeBackend();
     const { audit } = makeAuditor();
     const { logger } = makeLogger();
@@ -222,7 +224,7 @@ describe("WakeDispatcher: debounce", () => {
 
   it("same-tick concurrency via Promise.all produces exactly one dispatch", async () => {
     const registry = await makeRegistry();
-    registry.register("main", undefined, "claude-inbox");
+    registry.register("main", TEST_PANE_TOKEN, "claude-inbox");
     const { backend, sendCalls } = makeBackend();
     const { audit, entries } = makeAuditor();
     const { logger } = makeLogger();
@@ -241,7 +243,7 @@ describe("WakeDispatcher: debounce", () => {
 
   it("failed dispatch updates debounce timestamp so next message suppresses", async () => {
     const registry = await makeRegistry();
-    registry.register("main", undefined, "claude-inbox");
+    registry.register("main", TEST_PANE_TOKEN, "claude-inbox");
     let firstCall = true;
     const { backend } = makeBackend({
       sendKeys: async () => {
@@ -274,7 +276,7 @@ describe("WakeDispatcher: debounce", () => {
 describe("WakeDispatcher: failure handling", () => {
   it("logs warn with exitCode/signal and audits wake_dispatched { status: 'failed' }", async () => {
     const registry = await makeRegistry();
-    registry.register("main", undefined, "claude-inbox");
+    registry.register("main", TEST_PANE_TOKEN, "claude-inbox");
     const { backend } = makeBackend({
       sendKeys: async () => {
         const err = Object.assign(new Error("tmux fail"), { exitCode: 1, signal: null });
@@ -305,7 +307,7 @@ describe("WakeDispatcher: failure handling", () => {
 describe("WakeDispatcher: probe throws", () => {
   it("treats a probe that throws as unsafe; emits wake_suppressed and does not dispatch", async () => {
     const registry = await makeRegistry();
-    registry.register("main", undefined, "claude-inbox");
+    registry.register("main", TEST_PANE_TOKEN, "claude-inbox");
     const { backend, sendCalls } = makeBackend({
       isPaneStateSafe: async () => { throw new Error("tmux gone"); },
     });
@@ -327,7 +329,7 @@ describe("WakeDispatcher: probe throws", () => {
 describe("WakeDispatcher: audit.log throws", () => {
   it("swallows audit.log throw; counters still increment; dispatcher does not reject", async () => {
     const registry = await makeRegistry();
-    registry.register("main", undefined, "claude-inbox");
+    registry.register("main", TEST_PANE_TOKEN, "claude-inbox");
     const { backend, sendCalls } = makeBackend();
     const { logger, warnings } = makeLogger();
     const audit = { log: () => { throw new Error("audit sink down"); } };
@@ -344,7 +346,7 @@ describe("WakeDispatcher: audit.log throws", () => {
 describe("WakeDispatcher: failure signal propagation", () => {
   it("populates signal in the failure audit entry when backend error carries signal", async () => {
     const registry = await makeRegistry();
-    registry.register("main", undefined, "claude-inbox");
+    registry.register("main", TEST_PANE_TOKEN, "claude-inbox");
     const { backend } = makeBackend({
       sendKeys: async () => {
         const err = Object.assign(new Error("killed"), { exitCode: null, signal: "SIGKILL" });
@@ -365,7 +367,7 @@ describe("WakeDispatcher: failure signal propagation", () => {
 
   it("propagates failurePhase into the audit entry when backend marks it", async () => {
     const registry = await makeRegistry();
-    registry.register("main", undefined, "claude-inbox");
+    registry.register("main", TEST_PANE_TOKEN, "claude-inbox");
     const { backend } = makeBackend({
       sendKeys: async () => {
         const err = Object.assign(new Error("enter failed"), {
@@ -389,7 +391,7 @@ describe("WakeDispatcher: failure signal propagation", () => {
 describe("WakeDispatcher: currentCommand scrubbing", () => {
   it("strips non-printable bytes from currentCommand in the audit entry", async () => {
     const registry = await makeRegistry();
-    registry.register("main", undefined, "claude-inbox");
+    registry.register("main", TEST_PANE_TOKEN, "claude-inbox");
     const { backend } = makeBackend({
       isPaneStateSafe: async () => ({ safe: false, currentCommand: "evil\x1b[31mprompt\x00" }),
     });
@@ -409,7 +411,7 @@ describe("WakeDispatcher: currentCommand scrubbing", () => {
 
   it("truncates a ludicrously long currentCommand", async () => {
     const registry = await makeRegistry();
-    registry.register("main", undefined, "claude-inbox");
+    registry.register("main", TEST_PANE_TOKEN, "claude-inbox");
     const long = "a".repeat(1000);
     const { backend } = makeBackend({
       isPaneStateSafe: async () => ({ safe: false, currentCommand: long }),
@@ -428,7 +430,7 @@ describe("WakeDispatcher: currentCommand scrubbing", () => {
 describe("WakeDispatcher: debounceMs: 0", () => {
   it("never suppresses when debounceMs is 0 (every call dispatches)", async () => {
     const registry = await makeRegistry();
-    registry.register("main", undefined, "claude-inbox");
+    registry.register("main", TEST_PANE_TOKEN, "claude-inbox");
     const { backend, sendCalls } = makeBackend();
     const { audit } = makeAuditor();
     const { logger } = makeLogger();
@@ -443,7 +445,7 @@ describe("WakeDispatcher: debounceMs: 0", () => {
 describe("WakeDispatcher: audit content restrictions", () => {
   it("never leaks resolved command string, tokens, or tokenHash", async () => {
     const registry = await makeRegistry();
-    const result = registry.register("main", undefined, "claude-inbox");
+    const result = registry.register("main", TEST_PANE_TOKEN, "claude-inbox");
     const { backend } = makeBackend();
     const { audit, entries } = makeAuditor();
     const { logger } = makeLogger();

@@ -104,10 +104,12 @@ Run this from the worktree after `/opsx:archive` completes.
    - `$PEER_BUS_DISABLED` is NOT equal to `1`,
    - the `coordinator` MCP tool is available.
 
+   If `sessionToken` is not in working context, first call `register_session({ name: $COORDINATOR_SESSION_NAME, paneToken: $COORDINATOR_SESSION_TOKEN })` and cache the returned `sessionToken`.
+
    ```
    send_message({
-     sessionToken: <cached session token>,
-     to: "claude:main",
+     sessionToken: <sessionToken from context>,
+     to: "claude-main",
      kind: "workflow-event",
      body: {
        event: "ship-ready",

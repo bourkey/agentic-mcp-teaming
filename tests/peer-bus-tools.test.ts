@@ -127,46 +127,168 @@ describe("wrapEnvelope", () => {
   });
 });
 
+const TEST_PANE_TOKEN = "test-pane-token-at-minimum-32-bytes";
+
 describe("registerSessionTool", () => {
   it("succeeds on fresh name and returns token", async () => {
     const ctx = makeContext();
-    const result = await registerSessionTool(ctx, { name: "frontend" });
+    const result = await registerSessionTool(ctx, { name: "frontend", paneToken: TEST_PANE_TOKEN });
     const payload = parseSuccess(result);
     expect(payload["name"]).toBe("frontend");
     expect(typeof payload["sessionToken"]).toBe("string");
     expect(typeof payload["registeredAt"]).toBe("string");
   });
 
+  it("accepts hyphenated name like claude-main", async () => {
+    const ctx = makeContext();
+    const result = await registerSessionTool(ctx, { name: "claude-main", paneToken: TEST_PANE_TOKEN });
+    const payload = parseSuccess(result);
+    expect(payload["name"]).toBe("claude-main");
+  });
+
   it("rejects invalid name", async () => {
     const ctx = makeContext();
-    const result = await registerSessionTool(ctx, { name: "Frontend!" });
+    const result = await registerSessionTool(ctx, { name: "Frontend!", paneToken: TEST_PANE_TOKEN });
     const err = parseError(result);
     expect(err.error).toBe("invalid_session_name");
   });
 
-  it("rejects re-registration without priorSessionToken", async () => {
+  it("re-registration with matching paneToken always succeeds and issues new sessionToken", async () => {
     const ctx = makeContext();
-    await registerSessionTool(ctx, { name: "frontend" });
-    const result = await registerSessionTool(ctx, { name: "frontend" });
-    expect(parseError(result).error).toBe("invalid_prior_session_token_required");
-  });
-
-  it("rotates token on re-registration with correct prior token", async () => {
-    const ctx = makeContext();
-    const first = parseSuccess(await registerSessionTool(ctx, { name: "frontend" }));
-    const second = parseSuccess(
-      await registerSessionTool(ctx, { name: "frontend", priorSessionToken: first["sessionToken"] as string })
-    );
+    const first = parseSuccess(await registerSessionTool(ctx, { name: "frontend", paneToken: TEST_PANE_TOKEN }));
+    const second = parseSuccess(await registerSessionTool(ctx, { name: "frontend", paneToken: TEST_PANE_TOKEN }));
+    expect(typeof second["sessionToken"]).toBe("string");
     expect(second["sessionToken"]).not.toBe(first["sessionToken"]);
+    expect(second["registeredAt"]).toBe(first["registeredAt"]);
   });
 
-  it("audit entry redacts priorSessionToken", async () => {
+  it("registration without paneToken returns invalid_pane_token_missing", async () => {
+    const ctx = makeContext();
+    const result = await registerSessionTool(ctx, { name: "frontend" });
+    expect(parseError(result).error).toBe("invalid_pane_token_missing");
+  });
+
+  it("registration with empty paneToken returns invalid_pane_token_missing", async () => {
+    const ctx = makeContext();
+    const result = await registerSessionTool(ctx, { name: "frontend", paneToken: "" });
+    expect(parseError(result).error).toBe("invalid_pane_token_missing");
+  });
+
+  it("registration with paneToken exceeding 512 bytes returns invalid_pane_token_missing", async () => {
+    const ctx = makeContext();
+    const oversized = "x".repeat(513);
+    const result = await registerSessionTool(ctx, { name: "frontend", paneToken: oversized });
+    expect(parseError(result).error).toBe("invalid_pane_token_missing");
+  });
+
+  it("mismatched paneToken within TTL returns invalid_pane_token", async () => {
+    const ctx = makeContext();
+    await registerSessionTool(ctx, { name: "frontend", paneToken: "owner-token-padded-to-32-bytes-min" });
+    const result = await registerSessionTool(ctx, { name: "frontend", paneToken: "attacker-token-padded-to-32-bytes" });
+    expect(parseError(result).error).toBe("invalid_pane_token");
+  });
+
+  it("mismatched paneToken past TTL evicts stale entry and succeeds", async () => {
+    const ctx = makeContext({ inactivityTtlMs: 100 });
+    const first = parseSuccess(await registerSessionTool(ctx, { name: "frontend", paneToken: "old-token-padded-to-minimum-32-bytes" }));
+    // Backdate lastSeenAt so the entry is stale
+    const entry = ctx.registry.get("frontend")!;
+    entry.lastSeenAt = new Date(Date.now() - 200).toISOString();
+    const result = await registerSessionTool(ctx, { name: "frontend", paneToken: "new-token-padded-to-minimum-32-bytes" });
+    const second = parseSuccess(result);
+    expect(typeof second["sessionToken"]).toBe("string");
+    expect(second["registeredAt"]).not.toBe(first["registeredAt"]);
+  });
+
+  it("TTL=0 — hash mismatch always returns invalid_pane_token regardless of age", async () => {
+    const ctx = makeContext({ inactivityTtlMs: 0 });
+    await registerSessionTool(ctx, { name: "frontend", paneToken: "owner-token-padded-to-32-bytes-min" });
+    // Backdate to simulate a very old entry
+    const entry = ctx.registry.get("frontend")!;
+    entry.lastSeenAt = new Date(0).toISOString();
+    const result = await registerSessionTool(ctx, { name: "frontend", paneToken: "other-token-padded-to-32-bytes-min" });
+    expect(parseError(result).error).toBe("invalid_pane_token");
+  });
+
+  it("TTL=0 — legacy entry (no paneTokenHash) still allows fresh registration", async () => {
+    const { logger } = makeLogger();
+    const ctx = makeContext({ inactivityTtlMs: 0 });
+    // Inject a legacy entry without paneTokenHash directly
+    (ctx.registry as unknown as { sessions: Map<string, unknown> }).sessions.set("frontend", {
+      name: "frontend",
+      tokenHash: "",
+      registeredAt: new Date(0).toISOString(),
+      lastSeenAt: new Date(0).toISOString(),
+      unreadMessageIds: [],
+    });
+    void logger;
+    const result = await registerSessionTool(ctx, { name: "frontend", paneToken: "any-token-padded-to-minimum-32-bytes" });
+    parseSuccess(result);
+  });
+
+  it("legacy entry (no paneTokenHash) allows fresh registration preserving registeredAt", async () => {
+    const ctx = makeContext();
+    const oldRegisteredAt = new Date(Date.now() - 86400000).toISOString(); // 1 day ago
+    (ctx.registry as unknown as { sessions: Map<string, unknown> }).sessions.set("frontend", {
+      name: "frontend",
+      tokenHash: "",
+      registeredAt: oldRegisteredAt,
+      lastSeenAt: new Date(Date.now() - 1000).toISOString(),
+      unreadMessageIds: [],
+    });
+    const result = await registerSessionTool(ctx, { name: "frontend", paneToken: "any-token-padded-to-minimum-32-bytes" });
+    const payload = parseSuccess(result);
+    expect(payload["registeredAt"]).toBe(oldRegisteredAt);
+  });
+
+  it("eviction warn log contains only session name and lastSeenAt — no token values", async () => {
+    const { logger, warnings } = makeLogger();
+    // Pass the registry built with the tracked logger so eviction warns are captured
+    const registry = new SessionRegistry(join(dir, "registry.json"), logger);
+    const ctx = makeContext({ registry, logger, inactivityTtlMs: 100 });
+    await registerSessionTool(ctx, { name: "frontend", paneToken: "old-token-padded-to-minimum-32-bytes" });
+    const entry = ctx.registry.get("frontend")!;
+    entry.lastSeenAt = new Date(Date.now() - 200).toISOString();
+    await registerSessionTool(ctx, { name: "frontend", paneToken: "new-token-padded-to-minimum-32-bytes" });
+    const evictWarn = warnings.find((w) => w.message.includes("evicting"));
+    expect(evictWarn).toBeDefined();
+    const meta = JSON.stringify(evictWarn!.meta ?? {});
+    expect(meta).not.toContain("old-token");
+    expect(meta).not.toContain("new-token");
+    expect(meta).not.toContain("paneToken");
+    expect(meta).not.toContain("Hash");
+  });
+
+  it("persist failure during re-registration rolls back to original entry", async () => {
+    const ctx = makeContext();
+    await registerSessionTool(ctx, { name: "frontend", paneToken: TEST_PANE_TOKEN });
+    const tokenHashBefore = ctx.registry.get("frontend")!.tokenHash;
+
+    vi.spyOn(ctx.registry, "persist").mockRejectedValueOnce(new Error("disk full"));
+    const result = await registerSessionTool(ctx, { name: "frontend", paneToken: TEST_PANE_TOKEN });
+
+    expect(parseError(result).error).toBe("response_internal_error");
+    expect(ctx.registry.get("frontend")!.tokenHash).toBe(tokenHashBefore);
+  });
+
+  it("priorSessionToken is silently stripped (ignored) when present", async () => {
+    const ctx = makeContext();
+    const result = await registerSessionTool(ctx, {
+      name: "frontend",
+      paneToken: TEST_PANE_TOKEN,
+      priorSessionToken: "some-old-token",
+    } as Record<string, unknown>);
+    parseSuccess(result);
+  });
+
+  it("audit entry redacts paneToken", async () => {
     const { audit, entries } = makeAuditor();
     const ctx = makeContext({ audit });
-    await registerSessionTool(ctx, { name: "frontend", priorSessionToken: "verysecret" });
+    await registerSessionTool(ctx, { name: "frontend", paneToken: "verysecret-padded-to-minimum-32-bytes" });
     const entry = entries[0]!;
     const params = entry["params"] as Record<string, unknown>;
-    expect(params["priorSessionToken"]).toBe("<redacted>");
+    expect(params["paneToken"]).toBe("<redacted>");
+    expect(JSON.stringify(params)).not.toContain("verysecret");
   });
 });
 
@@ -179,7 +301,7 @@ describe("sendMessageTool", () => {
 
   it("rejects unknown token via timing-safe compare", async () => {
     const ctx = makeContext();
-    await registerSessionTool(ctx, { name: "a" });
+    await registerSessionTool(ctx, { name: "a", paneToken: TEST_PANE_TOKEN });
     const result = await sendMessageTool(ctx, {
       sessionToken: "bogus",
       to: "b",
@@ -191,7 +313,7 @@ describe("sendMessageTool", () => {
 
   it("rejects invalid recipient name", async () => {
     const ctx = makeContext();
-    const reg = parseSuccess(await registerSessionTool(ctx, { name: "a" }));
+    const reg = parseSuccess(await registerSessionTool(ctx, { name: "a", paneToken: TEST_PANE_TOKEN }));
     const result = await sendMessageTool(ctx, {
       sessionToken: reg["sessionToken"],
       to: "Bad Name!",
@@ -203,8 +325,8 @@ describe("sendMessageTool", () => {
 
   it("rejects body exceeding max", async () => {
     const ctx = makeContext();
-    const reg = parseSuccess(await registerSessionTool(ctx, { name: "a" }));
-    await registerSessionTool(ctx, { name: "b" });
+    const reg = parseSuccess(await registerSessionTool(ctx, { name: "a", paneToken: TEST_PANE_TOKEN }));
+    await registerSessionTool(ctx, { name: "b", paneToken: TEST_PANE_TOKEN });
     const big = "x".repeat(PEER_BUS_MAX_BODY_BYTES + 1);
     const result = await sendMessageTool(ctx, {
       sessionToken: reg["sessionToken"],
@@ -217,7 +339,7 @@ describe("sendMessageTool", () => {
 
   it("rejects unregistered recipient", async () => {
     const ctx = makeContext();
-    const reg = parseSuccess(await registerSessionTool(ctx, { name: "a" }));
+    const reg = parseSuccess(await registerSessionTool(ctx, { name: "a", paneToken: TEST_PANE_TOKEN }));
     const result = await sendMessageTool(ctx, {
       sessionToken: reg["sessionToken"],
       to: "nobody",
@@ -229,8 +351,8 @@ describe("sendMessageTool", () => {
 
   it("rejects workflow-event without event field", async () => {
     const ctx = makeContext();
-    const reg = parseSuccess(await registerSessionTool(ctx, { name: "a" }));
-    await registerSessionTool(ctx, { name: "b" });
+    const reg = parseSuccess(await registerSessionTool(ctx, { name: "a", paneToken: TEST_PANE_TOKEN }));
+    await registerSessionTool(ctx, { name: "b", paneToken: TEST_PANE_TOKEN });
     const result = await sendMessageTool(ctx, {
       sessionToken: reg["sessionToken"],
       to: "b",
@@ -242,8 +364,8 @@ describe("sendMessageTool", () => {
 
   it("rejects workflow-event with empty event string", async () => {
     const ctx = makeContext();
-    const reg = parseSuccess(await registerSessionTool(ctx, { name: "a" }));
-    await registerSessionTool(ctx, { name: "b" });
+    const reg = parseSuccess(await registerSessionTool(ctx, { name: "a", paneToken: TEST_PANE_TOKEN }));
+    await registerSessionTool(ctx, { name: "b", paneToken: TEST_PANE_TOKEN });
     const result = await sendMessageTool(ctx, {
       sessionToken: reg["sessionToken"],
       to: "b",
@@ -255,8 +377,8 @@ describe("sendMessageTool", () => {
 
   it("accepts workflow-event with required event field", async () => {
     const ctx = makeContext();
-    const reg = parseSuccess(await registerSessionTool(ctx, { name: "a" }));
-    await registerSessionTool(ctx, { name: "b" });
+    const reg = parseSuccess(await registerSessionTool(ctx, { name: "a", paneToken: TEST_PANE_TOKEN }));
+    await registerSessionTool(ctx, { name: "b", paneToken: TEST_PANE_TOKEN });
     const result = await sendMessageTool(ctx, {
       sessionToken: reg["sessionToken"],
       to: "b",
@@ -269,8 +391,8 @@ describe("sendMessageTool", () => {
 
   it("happy path appends and returns messageId", async () => {
     const ctx = makeContext();
-    const reg = parseSuccess(await registerSessionTool(ctx, { name: "a" }));
-    await registerSessionTool(ctx, { name: "b" });
+    const reg = parseSuccess(await registerSessionTool(ctx, { name: "a", paneToken: TEST_PANE_TOKEN }));
+    await registerSessionTool(ctx, { name: "b", paneToken: TEST_PANE_TOKEN });
     const result = await sendMessageTool(ctx, {
       sessionToken: reg["sessionToken"],
       to: "b",
@@ -282,8 +404,8 @@ describe("sendMessageTool", () => {
 
   it("mailbox_full when unread cap reached", async () => {
     const ctx = makeContext();
-    const regA = parseSuccess(await registerSessionTool(ctx, { name: "a" }));
-    await registerSessionTool(ctx, { name: "b" });
+    const regA = parseSuccess(await registerSessionTool(ctx, { name: "a", paneToken: TEST_PANE_TOKEN }));
+    await registerSessionTool(ctx, { name: "b", paneToken: TEST_PANE_TOKEN });
     // Saturate b's unread list by direct registry mutation (faster than 10k sends)
     const bEntry = ctx.registry.get("b");
     if (bEntry === undefined) throw new Error("b not registered");
@@ -301,8 +423,8 @@ describe("sendMessageTool", () => {
   it("audit log redacts sessionToken and hashes body", async () => {
     const { audit, entries } = makeAuditor();
     const ctx = makeContext({ audit });
-    const reg = parseSuccess(await registerSessionTool(ctx, { name: "a" }));
-    await registerSessionTool(ctx, { name: "b" });
+    const reg = parseSuccess(await registerSessionTool(ctx, { name: "a", paneToken: TEST_PANE_TOKEN }));
+    await registerSessionTool(ctx, { name: "b", paneToken: TEST_PANE_TOKEN });
     await sendMessageTool(ctx, {
       sessionToken: reg["sessionToken"],
       to: "b",
@@ -328,8 +450,8 @@ describe("sendMessageTool", () => {
     const ctx = makeContext({
       notifierConfig: { ...DEFAULT_NOTIFIER, tmuxEnabled: true },
     });
-    const reg = parseSuccess(await registerSessionTool(ctx, { name: "a" }));
-    await registerSessionTool(ctx, { name: "b" });
+    const reg = parseSuccess(await registerSessionTool(ctx, { name: "a", paneToken: TEST_PANE_TOKEN }));
+    await registerSessionTool(ctx, { name: "b", paneToken: TEST_PANE_TOKEN });
     await sendMessageTool(ctx, {
       sessionToken: reg["sessionToken"],
       to: "b",
@@ -349,8 +471,8 @@ describe("readMessagesTool", () => {
 
   it("drains the mailbox and returns wrapped envelopes", async () => {
     const ctx = makeContext();
-    const regA = parseSuccess(await registerSessionTool(ctx, { name: "a" }));
-    const regB = parseSuccess(await registerSessionTool(ctx, { name: "b" }));
+    const regA = parseSuccess(await registerSessionTool(ctx, { name: "a", paneToken: TEST_PANE_TOKEN }));
+    const regB = parseSuccess(await registerSessionTool(ctx, { name: "b", paneToken: TEST_PANE_TOKEN }));
     await sendMessageTool(ctx, {
       sessionToken: regA["sessionToken"],
       to: "b",
@@ -376,8 +498,8 @@ describe("readMessagesTool", () => {
 
   it("envelope escapes dangerous body content", async () => {
     const ctx = makeContext();
-    const regA = parseSuccess(await registerSessionTool(ctx, { name: "a" }));
-    const regB = parseSuccess(await registerSessionTool(ctx, { name: "b" }));
+    const regA = parseSuccess(await registerSessionTool(ctx, { name: "a", paneToken: TEST_PANE_TOKEN }));
+    const regB = parseSuccess(await registerSessionTool(ctx, { name: "b", paneToken: TEST_PANE_TOKEN }));
     await sendMessageTool(ctx, {
       sessionToken: regA["sessionToken"],
       to: "b",
@@ -395,8 +517,8 @@ describe("readMessagesTool", () => {
   it("audit log for read_messages summarises count/firstId/lastId/hasMore", async () => {
     const { audit, entries } = makeAuditor();
     const ctx = makeContext({ audit });
-    const regA = parseSuccess(await registerSessionTool(ctx, { name: "a" }));
-    const regB = parseSuccess(await registerSessionTool(ctx, { name: "b" }));
+    const regA = parseSuccess(await registerSessionTool(ctx, { name: "a", paneToken: TEST_PANE_TOKEN }));
+    const regB = parseSuccess(await registerSessionTool(ctx, { name: "b", paneToken: TEST_PANE_TOKEN }));
     await sendMessageTool(ctx, {
       sessionToken: regA["sessionToken"],
       to: "b",
@@ -423,6 +545,7 @@ describe("registerSessionTool: autoWakeKey validation", () => {
     });
     const result = await registerSessionTool(ctx, {
       name: "frontend",
+      paneToken: TEST_PANE_TOKEN,
       autoWakeKey: "claude-inbox",
     });
     parseSuccess(result);
@@ -434,7 +557,7 @@ describe("registerSessionTool: autoWakeKey validation", () => {
       autoWakeConfig: { allowedCommands: ALLOWLIST, debounceMs: 1000, allowedPaneCommands: ["bash"] },
     });
     const rejected = "not valid with spaces\nand newlines";
-    const result = await registerSessionTool(ctx, { name: "frontend", autoWakeKey: rejected });
+    const result = await registerSessionTool(ctx, { name: "frontend", paneToken: TEST_PANE_TOKEN, autoWakeKey: rejected });
     const err = parseError(result);
     expect(err.error).toBe("invalid_auto_wake_key");
     // Must NOT echo the submitted value
@@ -447,7 +570,7 @@ describe("registerSessionTool: autoWakeKey validation", () => {
       autoWakeConfig: { allowedCommands: ALLOWLIST, debounceMs: 1000, allowedPaneCommands: ["bash"] },
     });
     const over = "a".repeat(65);
-    const result = await registerSessionTool(ctx, { name: "frontend", autoWakeKey: over });
+    const result = await registerSessionTool(ctx, { name: "frontend", paneToken: TEST_PANE_TOKEN, autoWakeKey: over });
     const err = parseError(result);
     expect(err.error).toBe("invalid_auto_wake_key");
     expect(err.message).not.toContain(over);
@@ -459,6 +582,7 @@ describe("registerSessionTool: autoWakeKey validation", () => {
     });
     const result = await registerSessionTool(ctx, {
       name: "frontend",
+      paneToken: TEST_PANE_TOKEN,
       autoWakeKey: "nonexistent-key",
     });
     const err = parseError(result);
@@ -475,6 +599,7 @@ describe("registerSessionTool: autoWakeKey validation", () => {
     const ctx = makeContext({ autoWakeConfig: undefined });
     const result = await registerSessionTool(ctx, {
       name: "frontend",
+      paneToken: TEST_PANE_TOKEN,
       autoWakeKey: "claude-inbox",
     });
     const err = parseError(result);
@@ -488,6 +613,7 @@ describe("registerSessionTool: autoWakeKey validation", () => {
     });
     const result = await registerSessionTool(ctx, {
       name: "frontend",
+      paneToken: TEST_PANE_TOKEN,
       autoWakeKey: "claude-inbox",
     });
     const err = parseError(result);
@@ -503,7 +629,7 @@ describe("registerSessionTool: autoWakeKey validation", () => {
         allowedPaneCommands: ["bash"],
       },
     });
-    const result = await registerSessionTool(ctx, { name: "frontend", autoWakeKey: null });
+    const result = await registerSessionTool(ctx, { name: "frontend", paneToken: TEST_PANE_TOKEN, autoWakeKey: null });
     parseSuccess(result);
     expect(ctx.registry.get("frontend")?.autoWakeKey).toBe("claude-inbox");
   });
@@ -512,7 +638,7 @@ describe("registerSessionTool: autoWakeKey validation", () => {
     const ctx = makeContext({
       autoWakeConfig: { allowedCommands: ALLOWLIST, debounceMs: 1000, allowedPaneCommands: ["bash"] },
     });
-    const result = await registerSessionTool(ctx, { name: "frontend", autoWakeKey: null });
+    const result = await registerSessionTool(ctx, { name: "frontend", paneToken: TEST_PANE_TOKEN, autoWakeKey: null });
     const err = parseError(result);
     expect(err.error).toBe("invalid_auto_wake_key");
     expect(err.message).toContain("defaultCommand");
@@ -522,7 +648,7 @@ describe("registerSessionTool: autoWakeKey validation", () => {
     const ctx = makeContext({
       autoWakeConfig: { allowedCommands: ALLOWLIST, debounceMs: 1000, allowedPaneCommands: ["bash"] },
     });
-    await registerSessionTool(ctx, { name: "frontend" });
+    await registerSessionTool(ctx, { name: "frontend", paneToken: TEST_PANE_TOKEN });
     expect(ctx.registry.get("frontend")?.autoWakeKey).toBeUndefined();
   });
 
@@ -530,7 +656,7 @@ describe("registerSessionTool: autoWakeKey validation", () => {
     const ctx = makeContext({
       autoWakeConfig: { allowedCommands: ALLOWLIST, debounceMs: 1000, allowedPaneCommands: ["bash"] },
     });
-    const result = await registerSessionTool(ctx, { name: "frontend", autoWakeKey: "" });
+    const result = await registerSessionTool(ctx, { name: "frontend", paneToken: TEST_PANE_TOKEN, autoWakeKey: "" });
     const err = parseError(result);
     expect(err.error).toBe("invalid_auto_wake_key");
   });
@@ -541,7 +667,7 @@ describe("registerSessionTool: autoWakeKey validation", () => {
       audit,
       autoWakeConfig: { allowedCommands: ALLOWLIST, debounceMs: 1000, allowedPaneCommands: ["bash"] },
     });
-    await registerSessionTool(ctx, { name: "a", autoWakeKey: "claude-inbox" });
+    await registerSessionTool(ctx, { name: "a", paneToken: TEST_PANE_TOKEN, autoWakeKey: "claude-inbox" });
     const entry = entries.find((e) => e["tool"] === "register_session")!;
     const params = entry["params"] as Record<string, unknown>;
     expect(params["autoWakeKey"]).toBe("<present>");

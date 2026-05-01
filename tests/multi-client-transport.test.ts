@@ -112,11 +112,11 @@ describe("multi-client SSE transport (regression for startHttpServer one-server-
       // Both clients call register_session. Neither should throw.
       const resultA = await clientA.callTool({
         name: "register_session",
-        arguments: { name: "alpha" },
+        arguments: { name: "alpha", paneToken: "test-pane-token-at-minimum-32-bytes" },
       });
       const resultB = await clientB.callTool({
         name: "register_session",
-        arguments: { name: "beta" },
+        arguments: { name: "beta", paneToken: "test-pane-token-at-minimum-32-bytes" },
       });
 
       // Parse the tool text content on each side.
@@ -162,8 +162,8 @@ describe("multi-client SSE transport (regression for startHttpServer one-server-
     await clientB.connect(transportB);
 
     try {
-      const regA = JSON.parse((await clientA.callTool({ name: "register_session", arguments: { name: "sender" } })).content[0].text);
-      const regB = JSON.parse((await clientB.callTool({ name: "register_session", arguments: { name: "receiver" } })).content[0].text);
+      const regA = JSON.parse((await clientA.callTool({ name: "register_session", arguments: { name: "sender", paneToken: "test-pane-token-at-minimum-32-bytes" } })).content[0].text);
+      const regB = JSON.parse((await clientB.callTool({ name: "register_session", arguments: { name: "receiver", paneToken: "test-pane-token-at-minimum-32-bytes" } })).content[0].text);
 
       const sendResult = await clientA.callTool({
         name: "send_message",

@@ -72,9 +72,9 @@ async function runScenario(body: unknown): Promise<{
   };
 
   // A sends to B; B has autoWakeKey
-  const regA = await registerSessionTool(ctx, { name: "alpha" });
+  const regA = await registerSessionTool(ctx, { name: "alpha", paneToken: "test-pane-token-at-minimum-32-bytes" });
   const tokenA = (JSON.parse((regA.content[0] as { text: string }).text) as { sessionToken: string }).sessionToken;
-  await registerSessionTool(ctx, { name: "beta", autoWakeKey: "claude-inbox" });
+  await registerSessionTool(ctx, { name: "beta", paneToken: "test-pane-token-at-minimum-32-bytes", autoWakeKey: "claude-inbox" });
 
   await sendMessageTool(ctx, { sessionToken: tokenA, to: "beta", kind: "chat", body });
 
@@ -155,9 +155,9 @@ describe("send_message fan-out independence", () => {
       wakeFireAndAwait: true,
     };
 
-    const regA = await registerSessionTool(ctx, { name: "alpha" });
+    const regA = await registerSessionTool(ctx, { name: "alpha", paneToken: "test-pane-token-at-minimum-32-bytes" });
     const tokenA = (JSON.parse((regA.content[0] as { text: string }).text) as { sessionToken: string }).sessionToken;
-    await registerSessionTool(ctx, { name: "beta", autoWakeKey: "claude-inbox" });
+    await registerSessionTool(ctx, { name: "beta", paneToken: "test-pane-token-at-minimum-32-bytes", autoWakeKey: "claude-inbox" });
     const result = await sendMessageTool(ctx, { sessionToken: tokenA, to: "beta", kind: "chat", body: "x" });
 
     expect(result.isError).toBeFalsy();
@@ -191,9 +191,9 @@ describe("send_message fan-out independence", () => {
       wakeFireAndAwait: false, // fire-and-forget so send_message doesn't await
     };
 
-    const regA = await registerSessionTool(ctx, { name: "alpha" });
+    const regA = await registerSessionTool(ctx, { name: "alpha", paneToken: "test-pane-token-at-minimum-32-bytes" });
     const tokenA = (JSON.parse((regA.content[0] as { text: string }).text) as { sessionToken: string }).sessionToken;
-    await registerSessionTool(ctx, { name: "beta", autoWakeKey: "claude-inbox" });
+    await registerSessionTool(ctx, { name: "beta", paneToken: "test-pane-token-at-minimum-32-bytes", autoWakeKey: "claude-inbox" });
 
     const result = await sendMessageTool(ctx, { sessionToken: tokenA, to: "beta", kind: "chat", body: "x" });
     expect(result.isError).toBeFalsy();
