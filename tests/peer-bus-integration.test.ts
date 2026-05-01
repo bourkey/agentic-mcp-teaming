@@ -61,6 +61,8 @@ function errorPayload(result: { content: Array<{ text: string }>; isError?: bool
   return JSON.parse(result.content[0]!.text) as { error: string; message: string };
 }
 
+const TEST_PANE_TOKEN = "test-pane-token-at-minimum-32-bytes";
+
 let dir: string;
 
 beforeEach(async () => {
@@ -90,8 +92,8 @@ function makeContext(overrides: Partial<PeerBusContext> = {}): { ctx: PeerBusCon
 describe("peer-bus integration", () => {
   it("8.2 register A and B, A sends chat to B, B reads once and mailbox drains", async () => {
     const { ctx } = makeContext();
-    const regA = successPayload(await registerSessionTool(ctx, { name: "a" }));
-    const regB = successPayload(await registerSessionTool(ctx, { name: "b" }));
+    const regA = successPayload(await registerSessionTool(ctx, { name: "a", paneToken: TEST_PANE_TOKEN }));
+    const regB = successPayload(await registerSessionTool(ctx, { name: "b", paneToken: TEST_PANE_TOKEN }));
 
     const send = successPayload(
       await sendMessageTool(ctx, { sessionToken: regA["sessionToken"], to: "b", kind: "chat", body: "hello" })
@@ -109,8 +111,8 @@ describe("peer-bus integration", () => {
 
   it("8.3 workflow-event body serialises as escaped JSON text in envelope", async () => {
     const { ctx } = makeContext();
-    const regA = successPayload(await registerSessionTool(ctx, { name: "a" }));
-    const regB = successPayload(await registerSessionTool(ctx, { name: "b" }));
+    const regA = successPayload(await registerSessionTool(ctx, { name: "a", paneToken: TEST_PANE_TOKEN }));
+    const regB = successPayload(await registerSessionTool(ctx, { name: "b", paneToken: TEST_PANE_TOKEN }));
 
     await sendMessageTool(ctx, {
       sessionToken: regA["sessionToken"],
@@ -127,7 +129,7 @@ describe("peer-bus integration", () => {
 
   it("8.4 send to unregistered recipient returns recipient_not_registered", async () => {
     const { ctx } = makeContext();
-    const regA = successPayload(await registerSessionTool(ctx, { name: "a" }));
+    const regA = successPayload(await registerSessionTool(ctx, { name: "a", paneToken: TEST_PANE_TOKEN }));
     const result = await sendMessageTool(ctx, {
       sessionToken: regA["sessionToken"],
       to: "nobody",
@@ -137,15 +139,15 @@ describe("peer-bus integration", () => {
     expect(errorPayload(result).error).toBe("recipient_not_registered");
   });
 
-  it("8.5 token rotation: register → re-register with priorSessionToken → old token rejected", async () => {
+  it("8.5 paneToken re-registration: issues new sessionToken; old session token rejected", async () => {
     const { ctx } = makeContext();
-    const first = successPayload(await registerSessionTool(ctx, { name: "a" }));
+    const first = successPayload(await registerSessionTool(ctx, { name: "a", paneToken: TEST_PANE_TOKEN }));
     const second = successPayload(
-      await registerSessionTool(ctx, { name: "a", priorSessionToken: first["sessionToken"] })
+      await registerSessionTool(ctx, { name: "a", paneToken: TEST_PANE_TOKEN })
     );
     expect(second["sessionToken"]).not.toBe(first["sessionToken"]);
     // Old token should no longer authenticate
-    await registerSessionTool(ctx, { name: "b" });
+    await registerSessionTool(ctx, { name: "b", paneToken: TEST_PANE_TOKEN });
     const oldRes = await sendMessageTool(ctx, {
       sessionToken: first["sessionToken"],
       to: "b",
@@ -171,8 +173,8 @@ describe("peer-bus integration", () => {
       audit: { log: () => {} },
       notifierFireAndAwait: true,
     };
-    const regA = successPayload(await registerSessionTool(ctx1, { name: "a" }));
-    await registerSessionTool(ctx1, { name: "b" });
+    const regA = successPayload(await registerSessionTool(ctx1, { name: "a", paneToken: TEST_PANE_TOKEN }));
+    await registerSessionTool(ctx1, { name: "b", paneToken: TEST_PANE_TOKEN });
     await sendMessageTool(ctx1, { sessionToken: regA["sessionToken"], to: "b", kind: "chat", body: "pre-restart" });
     store1.close();
 
@@ -193,8 +195,8 @@ describe("peer-bus integration", () => {
       audit: { log: () => {} },
       notifierFireAndAwait: true,
     };
-    // b re-registers — no priorSessionToken because tokenHash is empty on disk-loaded entry
-    const regB2 = successPayload(await registerSessionTool(ctx2, { name: "b" }));
+    // b re-registers using paneToken — succeeds because paneTokenHash persists across restarts
+    const regB2 = successPayload(await registerSessionTool(ctx2, { name: "b", paneToken: TEST_PANE_TOKEN }));
     const read = successPayload(await readMessagesTool(ctx2, { sessionToken: regB2["sessionToken"] }));
     expect((read["messages"] as unknown[]).length).toBe(1);
   });
@@ -221,8 +223,8 @@ describe("peer-bus integration", () => {
     const { ctx } = makeContext({
       notifierConfig: { ...DEFAULT_NOTIFIER, tmuxEnabled: true },
     });
-    const regA = successPayload(await registerSessionTool(ctx, { name: "a" }));
-    await registerSessionTool(ctx, { name: "b" });
+    const regA = successPayload(await registerSessionTool(ctx, { name: "a", paneToken: TEST_PANE_TOKEN }));
+    await registerSessionTool(ctx, { name: "b", paneToken: TEST_PANE_TOKEN });
     const result = await sendMessageTool(ctx, {
       sessionToken: regA["sessionToken"],
       to: "b",
@@ -234,8 +236,8 @@ describe("peer-bus integration", () => {
 
   it("8.10 body boundary: 65536 accepted, 65537 rejected", async () => {
     const { ctx } = makeContext();
-    const regA = successPayload(await registerSessionTool(ctx, { name: "a" }));
-    await registerSessionTool(ctx, { name: "b" });
+    const regA = successPayload(await registerSessionTool(ctx, { name: "a", paneToken: TEST_PANE_TOKEN }));
+    await registerSessionTool(ctx, { name: "b", paneToken: TEST_PANE_TOKEN });
 
     const atLimit = "a".repeat(PEER_BUS_MAX_BODY_BYTES);
     const r1 = await sendMessageTool(ctx, { sessionToken: regA["sessionToken"], to: "b", kind: "chat", body: atLimit });
@@ -248,8 +250,8 @@ describe("peer-bus integration", () => {
 
   it("8.11 envelope escape: </peer-message> in body is escaped; only outer close tag remains", async () => {
     const { ctx } = makeContext();
-    const regA = successPayload(await registerSessionTool(ctx, { name: "a" }));
-    const regB = successPayload(await registerSessionTool(ctx, { name: "b" }));
+    const regA = successPayload(await registerSessionTool(ctx, { name: "a", paneToken: TEST_PANE_TOKEN }));
+    const regB = successPayload(await registerSessionTool(ctx, { name: "b", paneToken: TEST_PANE_TOKEN }));
     await sendMessageTool(ctx, {
       sessionToken: regA["sessionToken"],
       to: "b",
@@ -265,8 +267,8 @@ describe("peer-bus integration", () => {
 
   it("8.12 mailbox full: sending to saturated recipient returns mailbox_full", async () => {
     const { ctx } = makeContext();
-    const regA = successPayload(await registerSessionTool(ctx, { name: "a" }));
-    await registerSessionTool(ctx, { name: "b" });
+    const regA = successPayload(await registerSessionTool(ctx, { name: "a", paneToken: TEST_PANE_TOKEN }));
+    await registerSessionTool(ctx, { name: "b", paneToken: TEST_PANE_TOKEN });
     // Saturate via direct registry mutation (faster than 10k send_message calls)
     const b = ctx.registry.get("b");
     if (b === undefined) throw new Error("b not registered");
@@ -283,8 +285,8 @@ describe("peer-bus integration", () => {
 
   it("8.13 response cap: partial drain returns hasMore=true with remaining ids preserved in order", async () => {
     const { ctx } = makeContext();
-    const regA = successPayload(await registerSessionTool(ctx, { name: "a" }));
-    const regB = successPayload(await registerSessionTool(ctx, { name: "b" }));
+    const regA = successPayload(await registerSessionTool(ctx, { name: "a", paneToken: TEST_PANE_TOKEN }));
+    const regB = successPayload(await registerSessionTool(ctx, { name: "b", paneToken: TEST_PANE_TOKEN }));
     // Send 20 messages each with 60KB body so cumulative exceeds 1MB
     const big = "x".repeat(60_000);
     const sentIds: string[] = [];
@@ -359,8 +361,8 @@ describe("peer-bus integration", () => {
 
   it("8.12b mailbox_full: SHALL NOT append to messages.jsonl on full mailbox", async () => {
     const { ctx } = makeContext();
-    const regA = successPayload(await registerSessionTool(ctx, { name: "a" }));
-    await registerSessionTool(ctx, { name: "b" });
+    const regA = successPayload(await registerSessionTool(ctx, { name: "a", paneToken: TEST_PANE_TOKEN }));
+    await registerSessionTool(ctx, { name: "b", paneToken: TEST_PANE_TOKEN });
     const b = ctx.registry.get("b");
     if (b === undefined) throw new Error("b not registered");
     for (let i = 0; i < PEER_BUS_MAX_UNREAD; i += 1) b.unreadMessageIds.push(`stub${i}`);
@@ -416,8 +418,8 @@ describe("peer-bus integration", () => {
 
   it("concurrent read_messages returns disjoint message sets", async () => {
     const { ctx } = makeContext();
-    const regA = successPayload(await registerSessionTool(ctx, { name: "a" }));
-    const regB = successPayload(await registerSessionTool(ctx, { name: "b" }));
+    const regA = successPayload(await registerSessionTool(ctx, { name: "a", paneToken: TEST_PANE_TOKEN }));
+    const regB = successPayload(await registerSessionTool(ctx, { name: "b", paneToken: TEST_PANE_TOKEN }));
     const sentIds: string[] = [];
     for (let i = 0; i < 5; i += 1) {
       const r = successPayload(await sendMessageTool(ctx, {
@@ -460,14 +462,14 @@ describe("peer-bus integration", () => {
 
   it("success response shape has no isError field", async () => {
     const { ctx } = makeContext();
-    const result = await registerSessionTool(ctx, { name: "frontend" });
+    const result = await registerSessionTool(ctx, { name: "frontend", paneToken: TEST_PANE_TOKEN });
     expect(result.isError).toBeUndefined();
   });
 
   it("token verbatim comparison: whitespace/padding mutations reject", async () => {
     const { ctx } = makeContext();
-    const reg = successPayload(await registerSessionTool(ctx, { name: "a" }));
-    await registerSessionTool(ctx, { name: "b" });
+    const reg = successPayload(await registerSessionTool(ctx, { name: "a", paneToken: TEST_PANE_TOKEN }));
+    await registerSessionTool(ctx, { name: "b", paneToken: TEST_PANE_TOKEN });
     const rawToken = reg["sessionToken"] as string;
     for (const mutated of [` ${rawToken}`, `${rawToken} `, `${rawToken}=`, `${rawToken}\n`]) {
       const result = await sendMessageTool(ctx, {
@@ -482,8 +484,8 @@ describe("peer-bus integration", () => {
 
   it("replyTo rejects UUIDv1/v3/v5; accepts UUIDv4", async () => {
     const { ctx } = makeContext();
-    const reg = successPayload(await registerSessionTool(ctx, { name: "a" }));
-    await registerSessionTool(ctx, { name: "b" });
+    const reg = successPayload(await registerSessionTool(ctx, { name: "a", paneToken: TEST_PANE_TOKEN }));
+    await registerSessionTool(ctx, { name: "b", paneToken: TEST_PANE_TOKEN });
 
     // v1 UUID (time-based, starts with 1 in the third group)
     const uuidV1 = "550e8400-e29b-11d4-a716-446655440000";
@@ -510,8 +512,8 @@ describe("peer-bus integration", () => {
 
   it("XML control-char boundary: TAB/LF/CR preserved; 0x00 and 0x1F stripped", async () => {
     const { ctx } = makeContext();
-    const regA = successPayload(await registerSessionTool(ctx, { name: "a" }));
-    const regB = successPayload(await registerSessionTool(ctx, { name: "b" }));
+    const regA = successPayload(await registerSessionTool(ctx, { name: "a", paneToken: TEST_PANE_TOKEN }));
+    const regB = successPayload(await registerSessionTool(ctx, { name: "b", paneToken: TEST_PANE_TOKEN }));
     const bodyWithControls = "keep\ttab\nlf\rcr\u0000null\u001Fus";
     await sendMessageTool(ctx, {
       sessionToken: regA["sessionToken"],
@@ -542,8 +544,8 @@ describe("peer-bus integration", () => {
       notifierConfig: { ...DEFAULT_NOTIFIER, tmuxEnabled: true },
       notifierFireAndAwait: false, // fire-and-forget
     });
-    const regA = successPayload(await registerSessionTool(ctx, { name: "a" }));
-    await registerSessionTool(ctx, { name: "b" });
+    const regA = successPayload(await registerSessionTool(ctx, { name: "a", paneToken: TEST_PANE_TOKEN }));
+    await registerSessionTool(ctx, { name: "b", paneToken: TEST_PANE_TOKEN });
 
     const start = Date.now();
     const result = await sendMessageTool(ctx, {

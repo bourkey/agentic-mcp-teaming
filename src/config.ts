@@ -90,10 +90,17 @@ const PeerBusAutoWake = z
     }
   });
 
+const PeerBusSession = z.object({
+  inactivityTtlMs: z.number().int().nonnegative().default(600000),
+}).strict();
+
+export type PeerBusSessionConfig = z.infer<typeof PeerBusSession>;
+
 const PeerBus = z.object({
   enabled: z.boolean().default(false),
   notifier: PeerBusNotifier.default({}),
   autoWake: PeerBusAutoWake.optional(),
+  session: PeerBusSession.optional(),
 }).strict();
 
 const McpConfig = z.object({

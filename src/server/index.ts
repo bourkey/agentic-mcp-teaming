@@ -2,7 +2,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
 import express, { type Request } from "express";
 import { z } from "zod";
-import { randomUUID } from "crypto";
+import { randomUUID, createHash, timingSafeEqual } from "crypto";
 import { McpConfig } from "../config.js";
 import { SharedToolsContext, readFileTool, writeFileTool, grepTool, globTool, bashTool } from "./tools/shared.js";
 import { AgentToolsContext, invokeAgentTool, makeMockAgentTool, invokeReviewerTool } from "./tools/agents.js";
@@ -62,7 +62,11 @@ export function extractRequestToken(req: Pick<Request, "header" | "query">): str
 
 export function isAuthorizedRequest(req: Pick<Request, "header" | "query">, expectedToken?: string): boolean {
   if (!expectedToken) return true;
-  return extractRequestToken(req) === expectedToken;
+  const presented = extractRequestToken(req);
+  if (!presented) return false;
+  const a = createHash("sha256").update(presented).digest();
+  const b = createHash("sha256").update(expectedToken).digest();
+  return timingSafeEqual(a, b);
 }
 
 export function createCoordinatorServer(opts: CoordinatorServerOptions): McpServer {
@@ -315,6 +319,9 @@ export function createCoordinatorServer(opts: CoordinatorServerOptions): McpServ
       },
       ...(autoWake !== undefined ? { autoWakeConfig: autoWake } : {}),
       ...(wakeDispatcher !== undefined ? { wakeDispatcher } : {}),
+      ...(config.peerBus.session !== undefined
+        ? { inactivityTtlMs: config.peerBus.session.inactivityTtlMs }
+        : {}),
     };
 
     const allowlist = new Set(config.toolAllowlist);

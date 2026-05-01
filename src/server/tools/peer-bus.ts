@@ -12,7 +12,7 @@ import {
   RegistryError,
   PEER_BUS_MAX_UNREAD,
 } from "../../core/session-registry.js";
-import { SESSION_NAME_REGEX, UUID_V4_REGEX } from "../../core/peer-bus-constants.js";
+import { SESSION_NAME_REGEX, UUID_V4_REGEX, PEER_BUS_SESSION_DEFAULT_TTL_MS } from "../../core/peer-bus-constants.js";
 import { fireTmuxNotifier } from "../../core/notifier-tmux.js";
 import type { Logger } from "../../core/logger.js";
 import type { PeerBusConfig, PeerBusAutoWakeConfig } from "../../config.js";
@@ -23,8 +23,11 @@ const PEER_KIND = z.enum(["workflow-event", "chat", "request", "response"]);
 const AUTO_WAKE_KEY_REGEX = /^[a-zA-Z0-9_-]{1,64}$/;
 
 export const RegisterSessionParams = z.object({
-  name: z.string(),
-  priorSessionToken: z.string().optional(),
+  name: z.string().regex(SESSION_NAME_REGEX, "name must match ^[a-z0-9][a-z0-9-]{0,62}$"),
+  paneToken: z
+    .string()
+    .refine((v) => Buffer.byteLength(v, "utf8") >= 32, "paneToken must be at least 32 bytes")
+    .refine((v) => Buffer.byteLength(v, "utf8") <= 512, "paneToken exceeds 512 bytes"),
   /**
    * Opt-in auto-wake. `undefined` = opt-out (default). `null` = opt-in to
    * `peerBus.autoWake.defaultCommand`. A string = opt-in to that specific
@@ -65,6 +68,8 @@ export interface PeerBusContext {
   wakeDispatcher?: WakeDispatcher;
   /** Test hook: await the wake dispatch so tests can assert call argv. */
   wakeFireAndAwait?: boolean;
+  /** TTL for stale-entry eviction on register. Defaults to 600000 (10 min). */
+  inactivityTtlMs?: number;
 }
 
 export interface PeerBusAuditor {
@@ -121,7 +126,7 @@ function hashBody(body: unknown): string {
 
 function mapRegisterZodError(path: ReadonlyArray<string | number>): string {
   const root = path[0];
-  if (root === "priorSessionToken") return "invalid_prior_session_token_required";
+  if (root === "paneToken") return "invalid_pane_token_missing";
   if (root === "autoWakeKey") return "invalid_auto_wake_key";
   return "invalid_session_name";
 }
@@ -146,26 +151,23 @@ export async function registerSessionTool(
       issue?.message ?? "invalid params"
     );
   }
-  const { name, priorSessionToken, autoWakeKey } = parsed.data;
+  const { name, paneToken, autoWakeKey } = parsed.data;
 
   ctx.audit.log({
     tool: "register_session",
     params: {
       name,
-      priorSessionToken: priorSessionToken === undefined ? undefined : "<redacted>",
-      autoWakeKey: autoWakeKey === undefined ? undefined : autoWakeKey === null ? null : "<present>",
+      paneToken: "<redacted>",
+      autoWakeKey: autoWakeKey === undefined ? undefined : autoWakeKey === null ? "<default>" : "<present>",
     },
   });
-
-  if (!SESSION_NAME_REGEX.test(name)) {
-    return errorResult("invalid_session_name", "name must match ^[a-z0-9][a-z0-9-]{0,62}$");
-  }
 
   // Auto-wake validation (handler-stage — the dynamic enum cannot reject when the
   // allowlist is absent or empty; the Zod schema only enforces the format regex).
   let resolvedAutoWakeKey: string | null | undefined = autoWakeKey;
   if (autoWakeKey !== undefined) {
     const allowlist = ctx.autoWakeConfig?.allowedCommands;
+    // allowedCommands is a validated Record (not Map) — Object.keys is appropriate here
     if (allowlist === undefined || Object.keys(allowlist).length === 0) {
       return errorResult(
         "auto_wake_disabled",
@@ -188,7 +190,7 @@ export async function registerSessionTool(
       // pre-auth (it is the bootstrap for auth), and listing every operator-
       // configured allowlist key back to any caller is a one-shot enumeration
       // vector. Operators needing to debug can read the loaded config directly.
-      if (!(autoWakeKey in allowlist)) {
+      if (!Object.prototype.hasOwnProperty.call(allowlist, autoWakeKey)) {
         return errorResult(
           "invalid_auto_wake_key",
           "autoWakeKey does not match any key in allowedCommands"
@@ -201,7 +203,7 @@ export async function registerSessionTool(
   return ctx.registry.withLock(name, async () => {
     const snapshot = ctx.registry.snapshotEntry(name);
     try {
-      const { entry, rawToken } = ctx.registry.register(name, priorSessionToken, resolvedAutoWakeKey);
+      const { entry, rawToken } = ctx.registry.register(name, paneToken, resolvedAutoWakeKey, ctx.inactivityTtlMs ?? PEER_BUS_SESSION_DEFAULT_TTL_MS);
       try {
         await ctx.registry.persist();
       } catch (persistErr) {
@@ -220,6 +222,7 @@ export async function registerSessionTool(
       });
     } catch (err) {
       if (err instanceof RegistryError) {
+        // register() only throws RegistryError before mutating state — no rollback needed here
         return errorResult(err.code, err.message);
       }
       ctx.logger.error("register_session: unexpected error", {

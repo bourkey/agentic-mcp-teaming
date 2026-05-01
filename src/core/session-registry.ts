@@ -6,13 +6,15 @@ import { PEER_BUS_MAX_RESPONSE_BYTES, type PeerMessage } from "./message-store.j
 
 export const PEER_BUS_MAX_UNREAD = 10000;
 export { SESSION_NAME_REGEX } from "./peer-bus-constants.js";
-import { SESSION_NAME_REGEX } from "./peer-bus-constants.js";
+import { SESSION_NAME_REGEX, PEER_BUS_SESSION_DEFAULT_TTL_MS } from "./peer-bus-constants.js";
 
 const ZERO_SENTINEL = Buffer.alloc(32, 0);
 
 export interface SessionEntry {
   name: string;
   tokenHash: string;
+  /** sha256(paneToken) — persists across coordinator restarts, never wiped by clearTokenHashes() */
+  paneTokenHash?: string;
   registeredAt: string;
   lastSeenAt: string;
   unreadMessageIds: string[];
@@ -111,50 +113,59 @@ export class SessionRegistry {
 
   register(
     name: string,
-    priorSessionToken?: string,
-    autoWakeKey?: string | null
+    paneToken: string,
+    autoWakeKey?: string | null,
+    inactivityTtlMs = PEER_BUS_SESSION_DEFAULT_TTL_MS
   ): RegisterResult {
     if (!SESSION_NAME_REGEX.test(name)) {
       throw new RegistryError("invalid_session_name", `name '${name}' does not match required pattern`);
     }
 
-    const existing = this.sessions.get(name);
-    const hasActiveToken = existing !== undefined && existing.tokenHash !== "";
+    // Always compute presented hash for timing-safe comparison (prevents oracle attacks)
+    const presentedHash = sha256(paneToken);
 
-    if (existing === undefined) {
-      if (priorSessionToken !== undefined) {
-        throw new RegistryError(
-          "invalid_prior_session_token_required",
-          "fresh registration must not include priorSessionToken"
-        );
-      }
-    } else if (hasActiveToken) {
-      if (priorSessionToken === undefined) {
-        throw new RegistryError(
-          "invalid_prior_session_token_required",
-          "re-registration against an active name requires priorSessionToken"
-        );
-      }
-      const presented = sha256(priorSessionToken);
-      const stored = Buffer.from(existing.tokenHash, "hex");
-      if (presented.length !== stored.length || !crypto.timingSafeEqual(presented, stored)) {
-        throw new RegistryError(
-          "invalid_prior_session_token_required",
-          "priorSessionToken does not match stored tokenHash"
-        );
-      }
-    } else {
-      // existing entry with empty tokenHash (post-restart, pre-reregister)
-      if (priorSessionToken !== undefined) {
-        throw new RegistryError(
-          "invalid_prior_session_token_required",
-          "loaded-from-disk entry has no active owner; priorSessionToken must not be provided"
-        );
+    const existing = this.sessions.get(name);
+    // Whether to preserve registeredAt and unreadMessageIds from the existing entry.
+    // true for cases 2 (hash match) and 3 (legacy unowned); false for cases 1 and 5.
+    let preserveExisting = false;
+
+    if (existing !== undefined) {
+      if (existing.paneTokenHash !== undefined) {
+        const stored = Buffer.from(existing.paneTokenHash, "hex");
+        const compareTarget = stored.length === 32 ? stored : ZERO_SENTINEL;
+        const hashMatch = crypto.timingSafeEqual(presentedHash, compareTarget);
+
+        if (hashMatch) {
+          // Case 2: hash matches — re-registration always succeeds, preserve identity
+          preserveExisting = true;
+        } else {
+          // Hash mismatch — check TTL (TTL=0 disables eviction entirely)
+          // Treat malformed lastSeenAt (NaN from Date.parse) as within-TTL to
+          // prevent eviction via a poisoned registry.json entry.
+          const lastSeen = Date.parse(existing.lastSeenAt);
+          const age = Number.isNaN(lastSeen) ? 0 : Date.now() - lastSeen;
+          const withinTtl = inactivityTtlMs === 0 || age < inactivityTtlMs;
+          if (withinTtl) {
+            // Case 4: live entry owned by someone else — reject
+            throw new RegistryError("invalid_pane_token", "paneToken does not match the registered credential for this session name");
+          }
+          // Case 5: stale entry — evict; log contains only name and timestamp, never token values
+          this.logger.warn("register: evicting stale session", {
+            name: existing.name,
+            lastSeenAt: existing.lastSeenAt,
+          });
+          preserveExisting = false;
+        }
+      } else {
+        // Case 3: legacy entry (no paneTokenHash) — treat as unowned, preserve identity
+        preserveExisting = true;
       }
     }
+    // Case 1: no existing entry — preserveExisting stays false
 
     const rawToken = crypto.randomBytes(32).toString("base64url");
     const tokenHash = sha256Hex(rawToken);
+    const paneTokenHash = presentedHash.toString("hex");
     const now = nowIso();
 
     // autoWakeKey semantics:
@@ -165,16 +176,17 @@ export class SessionRegistry {
     if (autoWakeKey === null) {
       resolvedAutoWakeKey = undefined;
     } else if (autoWakeKey === undefined) {
-      resolvedAutoWakeKey = existing?.autoWakeKey;
+      resolvedAutoWakeKey = preserveExisting ? existing?.autoWakeKey : undefined;
     } else {
       resolvedAutoWakeKey = autoWakeKey;
     }
 
     const entry: SessionEntry =
-      existing !== undefined
+      preserveExisting && existing !== undefined
         ? {
             name,
             tokenHash,
+            paneTokenHash,
             registeredAt: existing.registeredAt,
             lastSeenAt: now,
             unreadMessageIds: existing.unreadMessageIds,
@@ -183,6 +195,7 @@ export class SessionRegistry {
         : {
             name,
             tokenHash,
+            paneTokenHash,
             registeredAt: now,
             lastSeenAt: now,
             unreadMessageIds: [],
@@ -203,11 +216,13 @@ export class SessionRegistry {
     const presented = sha256(rawToken);
     let matched: SessionEntry | null = null;
     for (const entry of this.sessions.values()) {
-      const stored = entry.tokenHash !== "" ? Buffer.from(entry.tokenHash, "hex") : ZERO_SENTINEL;
-      // Pad/truncate to 32 bytes for uniform comparison cost
+      const isEmpty = entry.tokenHash === "";
+      const stored = isEmpty ? ZERO_SENTINEL : Buffer.from(entry.tokenHash, "hex");
       const compareTarget = stored.length === 32 ? stored : ZERO_SENTINEL;
       const isMatch = crypto.timingSafeEqual(presented, compareTarget);
-      if (isMatch && entry.tokenHash !== "") {
+      // isEmpty guard is load-bearing: a zero-sentinel collision would otherwise
+      // match an empty-hash entry and grant authentication without a valid token.
+      if (isMatch && !isEmpty) {
         matched = entry;
       }
     }
@@ -239,6 +254,7 @@ export class SessionRegistry {
     return {
       name: entry.name,
       tokenHash: entry.tokenHash,
+      ...(entry.paneTokenHash !== undefined ? { paneTokenHash: entry.paneTokenHash } : {}),
       registeredAt: entry.registeredAt,
       lastSeenAt: entry.lastSeenAt,
       unreadMessageIds: [...entry.unreadMessageIds],
@@ -254,11 +270,14 @@ export class SessionRegistry {
       this.sessions.set(name, {
         name: snapshot.name,
         tokenHash: snapshot.tokenHash,
+        ...(snapshot.paneTokenHash !== undefined ? { paneTokenHash: snapshot.paneTokenHash } : {}),
         registeredAt: snapshot.registeredAt,
         lastSeenAt: snapshot.lastSeenAt,
         unreadMessageIds: [...snapshot.unreadMessageIds],
         ...(snapshot.autoWakeKey !== undefined ? { autoWakeKey: snapshot.autoWakeKey } : {}),
       });
+      // wakeStates is in-memory only — leave it intact when restoring a prior entry snapshot
+      // so the debounce window is not reset for a session that remains live.
     }
   }
 
@@ -418,6 +437,7 @@ export class SessionRegistry {
   }
 
   clearTokenHashes(): void {
+    // Only wipe the rotating sessionToken hash; paneTokenHash persists across restarts
     for (const entry of this.sessions.values()) entry.tokenHash = "";
   }
 
@@ -428,6 +448,7 @@ export class SessionRegistry {
     const tmp = this.path + ".tmp";
     await fsp.writeFile(tmp, JSON.stringify(payload, null, 2), { encoding: "utf8", mode: 0o600 });
     await fsp.rename(tmp, this.path);
+    await fsp.chmod(this.path, 0o600);
   }
 
   async load(): Promise<void> {
@@ -462,9 +483,17 @@ export class SessionRegistry {
         typeof e.lastSeenAt !== "string" ||
         !Array.isArray(e.unreadMessageIds)
       ) continue;
+      if (e.name !== key) {
+        this.logger.error("registry: name/key mismatch, skipping", { key, name: e.name });
+        continue;
+      }
       const cleaned: SessionEntry = {
         name: e.name,
-        tokenHash: "", // wipe on load
+        tokenHash: "", // wipe rotating token on load
+        // paneTokenHash persists across restarts — entries without it are legacy unowned
+        ...(typeof e.paneTokenHash === "string" && e.paneTokenHash.length > 0
+          ? { paneTokenHash: e.paneTokenHash }
+          : {}),
         registeredAt: e.registeredAt,
         lastSeenAt: e.lastSeenAt,
         unreadMessageIds: e.unreadMessageIds.filter((x): x is string => typeof x === "string"),

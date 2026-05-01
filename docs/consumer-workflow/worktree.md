@@ -375,10 +375,12 @@ Run this from the **main checkout** after `/opsx:propose` completes.
 
    When the gate is open, call:
 
+   If `sessionToken` is not in working context, first call `register_session({ name: $COORDINATOR_SESSION_NAME, paneToken: $COORDINATOR_SESSION_TOKEN })` and cache the returned `sessionToken`.
+
    ```
    send_message({
-     sessionToken: <cached session token>,
-     to: "claude:<area>",                   # the same area the worktree was created under
+     sessionToken: <sessionToken from context>,
+     to: "claude-<area>",                   # the same area the worktree was created under
      kind: "workflow-event",
      body: {
        event: "worktree-ready",
