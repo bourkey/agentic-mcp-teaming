@@ -19,33 +19,14 @@ export interface AcquiredLock {
   path: string;
 }
 
-export function acquireCoordinatorLock(sessionsDir: string, logger: Logger): AcquiredLock {
-  const lockPath = join(sessionsDir, LOCK_FILENAME);
-  let fd: number;
+function writePidAndBuildRelease(fd: number, lockPath: string, logger: Logger): AcquiredLock {
+  const ownPid = process.pid;
   try {
-    fd = fs.openSync(lockPath, "wx");
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === "EEXIST") {
-      let priorContent: string | null = null;
-      try {
-        priorContent = fs.readFileSync(lockPath, "utf8");
-      } catch {
-        // ignore read errors; we still throw EEXIST
-      }
-      throw new CoordinatorLockError(lockPath, priorContent);
-    }
-    throw err;
-  }
-
-  const content = `pid=${process.pid}\n`;
-  try {
-    fs.writeSync(fd, content);
+    fs.writeSync(fd, `pid=${ownPid}\n`);
   } finally {
     fs.closeSync(fd);
   }
-
   let released = false;
-  const ownPid = process.pid;
   const release = (): void => {
     if (released) return;
     released = true;
@@ -53,8 +34,7 @@ export function acquireCoordinatorLock(sessionsDir: string, logger: Logger): Acq
     try {
       current = fs.readFileSync(lockPath, "utf8");
     } catch (err) {
-      const code = (err as NodeJS.ErrnoException).code;
-      if (code === "ENOENT") return;
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") return;
       logger.warn("coordinator-lock: failed to read lock on release", { error: (err as Error).message });
       return;
     }
@@ -71,8 +51,41 @@ export function acquireCoordinatorLock(sessionsDir: string, logger: Logger): Acq
       logger.warn("coordinator-lock: unlink failed on release", { error: (err as Error).message });
     }
   };
-
   return { release, path: lockPath };
+}
+
+export function acquireCoordinatorLock(sessionsDir: string, logger: Logger): AcquiredLock {
+  const lockPath = join(sessionsDir, LOCK_FILENAME);
+  let fd: number;
+  try {
+    fd = fs.openSync(lockPath, "wx");
+    return writePidAndBuildRelease(fd, lockPath, logger);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
+  }
+
+  // Lock file exists — read current content and check for stale PID.
+  let priorContent: string | null = null;
+  try { priorContent = fs.readFileSync(lockPath, "utf8"); } catch { /* ignore */ }
+
+  const pidMatch = priorContent?.match(/^pid=(\d+)/);
+  if (pidMatch) {
+    const pid = parseInt(pidMatch[1]!, 10);
+    let alive = true;
+    try { process.kill(pid, 0); } catch { alive = false; }
+    if (!alive) {
+      logger.warn("coordinator-lock: stale lock detected, removing", { stalePid: pid, lockPath });
+      try { fs.unlinkSync(lockPath); } catch { /* ignore */ }
+      try {
+        fd = fs.openSync(lockPath, "wx");
+        return writePidAndBuildRelease(fd, lockPath, logger);
+      } catch {
+        throw new CoordinatorLockError(lockPath, priorContent ?? null);
+      }
+    }
+  }
+
+  throw new CoordinatorLockError(lockPath, priorContent);
 }
 
 /**

@@ -2,7 +2,7 @@
 import { Command } from "commander";
 import { execFile } from "child_process";
 import { promisify } from "util";
-import { access } from "fs/promises";
+import { access, readdir, stat } from "fs/promises";
 import { resolve } from "path";
 import { loadConfig } from "./config.js";
 import { SessionManager } from "./core/session.js";
@@ -26,6 +26,20 @@ const execFileAsync = promisify(execFile);
 
 async function fileExists(path: string): Promise<boolean> {
   try { await access(path); return true; } catch { return false; }
+}
+
+async function findMostRecentSession(sessionsDir: string): Promise<string | undefined> {
+  let entries: string[];
+  try { entries = await readdir(sessionsDir); } catch { return undefined; }
+  let best: { id: string; mtime: number } | undefined;
+  for (const entry of entries) {
+    const statePath = `${sessionsDir}/${entry}/state.json`;
+    try {
+      const s = await stat(statePath);
+      if (!best || s.mtimeMs > best.mtime) best = { id: entry, mtime: s.mtimeMs };
+    } catch { /* skip */ }
+  }
+  return best?.id;
 }
 
 async function validateRegistryClis(registry: AgentRegistry): Promise<void> {
@@ -249,10 +263,12 @@ async function main(): Promise<void> {
       // Serve mode does NOT validate agent CLIs — no workflow runs.
       const registry = new AgentRegistry(config.agents);
 
-      const session = opts.session
-        ? await SessionManager.load(opts.sessionsDir, opts.session)
+      const resumeId = opts.session ?? await findMostRecentSession(opts.sessionsDir);
+      const session = resumeId
+        ? await SessionManager.load(opts.sessionsDir, resumeId)
         : await SessionManager.create(opts.sessionsDir);
       const { sessionId } = session.get();
+      if (resumeId) consoleLogger.info(`Resuming session ${sessionId}`);
       const logger = new AuditLogger(opts.sessionsDir, sessionId);
       const snapshots = new SnapshotStore(opts.sessionsDir, sessionId);
       const checkpoint = new HumanCheckpoint(logger, sessionId, "proceed");
