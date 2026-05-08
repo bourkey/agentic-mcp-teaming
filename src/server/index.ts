@@ -38,6 +38,7 @@ export interface CoordinatorServerOptions {
   checkpoint: HumanCheckpoint;
   dryRun?: boolean;
   peerBus?: PeerBusWiring;
+  paneToken?: string;
 }
 
 export interface PeerBusWiring {
@@ -322,6 +323,7 @@ export function createCoordinatorServer(opts: CoordinatorServerOptions): McpServ
       ...(config.peerBus.session !== undefined
         ? { inactivityTtlMs: config.peerBus.session.inactivityTtlMs }
         : {}),
+      ...(opts.paneToken !== undefined ? { paneToken: opts.paneToken } : {}),
     };
 
     const allowlist = new Set(config.toolAllowlist);
@@ -365,7 +367,7 @@ export function createCoordinatorServer(opts: CoordinatorServerOptions): McpServ
  * pattern is mandatory for multi-client HTTP transport.
  */
 export async function startHttpServer(
-  serverFactory: () => McpServer,
+  serverFactory: (paneToken?: string) => McpServer,
   port: number,
   host = "127.0.0.1",
   authToken?: string
@@ -379,8 +381,12 @@ export async function startHttpServer(
       res.status(401).send("Unauthorized");
       return;
     }
+    const raw = req.header("x-pane-token");
+    const trimmed = raw?.trim();
+    const byteLen = trimmed ? Buffer.byteLength(trimmed, "utf8") : 0;
+    const paneToken = byteLen >= 32 && byteLen <= 512 ? trimmed : undefined;
     const transport = new SSEServerTransport("/message", res);
-    const server = serverFactory();
+    const server = serverFactory(paneToken);
     transports.set(transport.sessionId, transport);
     connectionServers.set(transport.sessionId, server);
     res.on("close", () => {

@@ -24,10 +24,6 @@ const AUTO_WAKE_KEY_REGEX = /^[a-zA-Z0-9_-]{1,64}$/;
 
 export const RegisterSessionParams = z.object({
   name: z.string().regex(SESSION_NAME_REGEX, "name must match ^[a-z0-9][a-z0-9-]{0,62}$"),
-  paneToken: z
-    .string()
-    .refine((v) => Buffer.byteLength(v, "utf8") >= 32, "paneToken must be at least 32 bytes")
-    .refine((v) => Buffer.byteLength(v, "utf8") <= 512, "paneToken exceeds 512 bytes"),
   /**
    * Opt-in auto-wake. `undefined` = opt-out (default). `null` = opt-in to
    * `peerBus.autoWake.defaultCommand`. A string = opt-in to that specific
@@ -60,6 +56,8 @@ export interface PeerBusContext {
   notifierConfig: PeerBusConfig["notifier"];
   logger: Logger;
   audit: PeerBusAuditor;
+  /** Pane identity credential extracted from X-Pane-Token header at SSE connection time. */
+  paneToken?: string;
   /** Test hook: run notifier synchronously so tests can assert call count. */
   notifierFireAndAwait?: boolean;
   /** Optional auto-wake config. Absent → auto-wake disabled coordinator-wide. */
@@ -126,7 +124,6 @@ function hashBody(body: unknown): string {
 
 function mapRegisterZodError(path: ReadonlyArray<string | number>): string {
   const root = path[0];
-  if (root === "paneToken") return "invalid_pane_token_missing";
   if (root === "autoWakeKey") return "invalid_auto_wake_key";
   return "invalid_session_name";
 }
@@ -151,16 +148,26 @@ export async function registerSessionTool(
       issue?.message ?? "invalid params"
     );
   }
-  const { name, paneToken, autoWakeKey } = parsed.data;
+  const { name, autoWakeKey } = parsed.data;
 
   ctx.audit.log({
     tool: "register_session",
     params: {
       name,
-      paneToken: "<redacted>",
+      paneToken: ctx.paneToken !== undefined ? "<redacted>" : undefined,
       autoWakeKey: autoWakeKey === undefined ? undefined : autoWakeKey === null ? "<default>" : "<present>",
     },
   });
+
+  // Runtime guard: if the connection carries no paneToken but the registry entry
+  // has a stored hash, reject before acquiring the lock. The registry.register()
+  // also enforces this defensively for concurrent access scenarios.
+  if (ctx.paneToken === undefined) {
+    const existing = ctx.registry.get(name);
+    if (existing?.paneTokenHash !== undefined) {
+      return errorResult("invalid_pane_token_missing", "paneToken is required for this session name");
+    }
+  }
 
   // Auto-wake validation (handler-stage — the dynamic enum cannot reject when the
   // allowlist is absent or empty; the Zod schema only enforces the format regex).
@@ -203,7 +210,7 @@ export async function registerSessionTool(
   return ctx.registry.withLock(name, async () => {
     const snapshot = ctx.registry.snapshotEntry(name);
     try {
-      const { entry, rawToken } = ctx.registry.register(name, paneToken, resolvedAutoWakeKey, ctx.inactivityTtlMs ?? PEER_BUS_SESSION_DEFAULT_TTL_MS);
+      const { entry, rawToken } = ctx.registry.register(name, ctx.paneToken, resolvedAutoWakeKey, ctx.inactivityTtlMs ?? PEER_BUS_SESSION_DEFAULT_TTL_MS);
       try {
         await ctx.registry.persist();
       } catch (persistErr) {

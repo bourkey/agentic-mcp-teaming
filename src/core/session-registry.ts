@@ -113,7 +113,7 @@ export class SessionRegistry {
 
   register(
     name: string,
-    paneToken: string,
+    paneToken: string | undefined,
     autoWakeKey?: string | null,
     inactivityTtlMs = PEER_BUS_SESSION_DEFAULT_TTL_MS
   ): RegisterResult {
@@ -121,8 +121,10 @@ export class SessionRegistry {
       throw new RegistryError("invalid_session_name", `name '${name}' does not match required pattern`);
     }
 
-    // Always compute presented hash for timing-safe comparison (prevents oracle attacks)
-    const presentedHash = sha256(paneToken);
+    // Always compute a presented hash for constant-time comparison.
+    // Use ZERO_SENTINEL when paneToken is absent so the comparison path
+    // still executes at constant cost (prevents timing oracles on entry existence).
+    const presentedHash = paneToken !== undefined ? sha256(paneToken) : ZERO_SENTINEL;
 
     const existing = this.sessions.get(name);
     // Whether to preserve registeredAt and unreadMessageIds from the existing entry.
@@ -135,9 +137,13 @@ export class SessionRegistry {
         const compareTarget = stored.length === 32 ? stored : ZERO_SENTINEL;
         const hashMatch = crypto.timingSafeEqual(presentedHash, compareTarget);
 
-        if (hashMatch) {
+        if (hashMatch && paneToken !== undefined) {
           // Case 2: hash matches — re-registration always succeeds, preserve identity
           preserveExisting = true;
+        } else if (paneToken === undefined) {
+          // Defense in depth: handler checks this before calling register(), but
+          // concurrent access could change state between handler check and mutex.
+          throw new RegistryError("invalid_pane_token_missing", "paneToken is required for this session name");
         } else {
           // Hash mismatch — check TTL (TTL=0 disables eviction entirely)
           // Treat malformed lastSeenAt (NaN from Date.parse) as within-TTL to
@@ -165,7 +171,8 @@ export class SessionRegistry {
 
     const rawToken = crypto.randomBytes(32).toString("base64url");
     const tokenHash = sha256Hex(rawToken);
-    const paneTokenHash = presentedHash.toString("hex");
+    // Only store paneTokenHash when a real paneToken was supplied
+    const newPaneTokenHash = paneToken !== undefined ? presentedHash.toString("hex") : undefined;
     const now = nowIso();
 
     // autoWakeKey semantics:
@@ -186,7 +193,12 @@ export class SessionRegistry {
         ? {
             name,
             tokenHash,
-            paneTokenHash,
+            // Preserve existing paneTokenHash if no new credential supplied (legacy re-registration)
+            ...(newPaneTokenHash !== undefined
+              ? { paneTokenHash: newPaneTokenHash }
+              : existing.paneTokenHash !== undefined
+              ? { paneTokenHash: existing.paneTokenHash }
+              : {}),
             registeredAt: existing.registeredAt,
             lastSeenAt: now,
             unreadMessageIds: existing.unreadMessageIds,
@@ -195,7 +207,7 @@ export class SessionRegistry {
         : {
             name,
             tokenHash,
-            paneTokenHash,
+            ...(newPaneTokenHash !== undefined ? { paneTokenHash: newPaneTokenHash } : {}),
             registeredAt: now,
             lastSeenAt: now,
             unreadMessageIds: [],

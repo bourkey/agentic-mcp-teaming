@@ -171,7 +171,7 @@ async function main(): Promise<void> {
         unregisterLockHandlers = bootstrap.unregisterHandlers;
       }
 
-      const makeServer = (): ReturnType<typeof createCoordinatorServer> =>
+      const makeServer = (paneToken?: string): ReturnType<typeof createCoordinatorServer> =>
         createCoordinatorServer({
           config,
           session,
@@ -182,6 +182,7 @@ async function main(): Promise<void> {
           checkpoint,
           dryRun: opts.dryRun === true,
           ...(peerBusWiring !== undefined ? { peerBus: peerBusWiring } : {}),
+          ...(paneToken !== undefined ? { paneToken } : {}),
         });
       const stopServer = await startHttpServer(
         makeServer,
@@ -300,7 +301,7 @@ async function main(): Promise<void> {
 
       const bootstrap = await bootstrapPeerBus(opts.sessionsDir, sessionId, logger, consoleLogger);
 
-      const makeServer = (): ReturnType<typeof createCoordinatorServer> =>
+      const makeServer = (paneToken?: string): ReturnType<typeof createCoordinatorServer> =>
         createCoordinatorServer({
           config,
           session,
@@ -311,6 +312,7 @@ async function main(): Promise<void> {
           checkpoint,
           dryRun: false,
           peerBus: bootstrap.wiring,
+          ...(paneToken !== undefined ? { paneToken } : {}),
         });
 
       const stopServer = await startHttpServer(
