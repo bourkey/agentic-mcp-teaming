@@ -249,7 +249,14 @@ export async function sendMessageTool(
     const issue = parsed.error.issues[0];
     return errorResult(mapSendZodError(issue?.path ?? []), issue?.message ?? "invalid params");
   }
-  const { sessionToken, to, kind, body, replyTo } = parsed.data;
+  const { sessionToken, to, kind, replyTo } = parsed.data;
+  let body = parsed.data.body;
+
+  // Claude Code's MCP harness sometimes serializes nested objects as JSON strings.
+  // Auto-parse for workflow-event so the body object validation below can succeed.
+  if (kind === "workflow-event" && typeof body === "string") {
+    try { body = JSON.parse(body) as unknown; } catch { /* fall through to validator */ }
+  }
 
   const fromEntry = ctx.registry.authenticate(sessionToken);
   if (fromEntry === null) {
