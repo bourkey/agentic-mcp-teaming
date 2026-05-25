@@ -17,7 +17,7 @@ Run this from the worktree after `/opsx:archive` completes.
    git branch --show-current
    ```
 
-   - If the result is `main`: **stop immediately**. Print "`/opsx:ship` runs from a worktree, not the main checkout. Switch to your area's tmux pane (`cd ../generic-consumer-<area> && claude`) and re-run." Do not execute any further steps.
+   - If the result is `main`: **stop immediately**. Print "`/opsx:ship` runs from a worktree, not the main checkout. Switch to your area's pane (`cd ../generic-consumer-<area> && claude`) and re-run." Do not execute any further steps.
    - If the result is an empty string (detached HEAD): **stop immediately**. Print "Check out a named feature branch before running `/opsx:ship` — detached HEAD has no branch to push." Do not execute any further steps.
    - Otherwise: proceed.
 
@@ -91,20 +91,20 @@ Run this from the worktree after `/opsx:archive` completes.
    **PR:** <url>
 
    ---
-   Next step — switch to your main tmux pane and run:
+   Next step — switch to your main pane and run:
    /opsx:merge <number>
    ```
 
 7. **Emit `ship-ready` peer-bus event (optional; silently skipped when the bus is off)**
 
-   After the PR is confirmed open on GitHub. See `openspec/specs/portal-opsx-peer-bus/spec.md` (post-archive) for the normative contract.
+   After the PR is confirmed open on GitHub. See `openspec/changes/archive/2026-04-21-peer-session-bus/` for the normative contract.
 
    Gate: ALL of the following must be true, otherwise SKIP silently:
    - `$COORDINATOR_SESSION_NAME` is set,
    - `$PEER_BUS_DISABLED` is NOT equal to `1`,
    - the `coordinator` MCP tool is available.
 
-   If `sessionToken` is not in working context, first call `register_session({ name: $COORDINATOR_SESSION_NAME, paneToken: $COORDINATOR_SESSION_TOKEN })` and cache the returned `sessionToken`.
+   If `sessionToken` is not in working context, first call `register_session({ name: $COORDINATOR_SESSION_NAME })` and cache the returned `sessionToken`.
 
    ```
    send_message({
@@ -122,8 +122,29 @@ Run this from the worktree after `/opsx:archive` completes.
 
    Body-field hygiene: only the four fields above. Do NOT include PR URL, PR title, or any other free-text. Same error-handling as the `worktree-ready` emit: `invalid_session_token` → startup-skill recovery; any other named or transport error → one log per session (`peer-bus: <error> for ship-ready`) and continue.
 
+8. **Update `.opsx-state.json` to `merged-or-awaiting-merge` (guarded)**
+
+   Skip this step if `OPSX_AUTONOMY_DISABLED=1` — still opened the PR, but do NOT update the state file.
+
+   If the step-5 PR open succeeded: read `.opsx-state.json` from the worktree root (if it exists), set `phase` to `merged-or-awaiting-merge`, `idle_tracking` to `{ "first_idle_at": null }`, update `updated_at` to the current ISO-8601 timestamp, and write the file back. Preserve all other fields (`change`, `pending_decision_request`, `retry_budget`).
+
+   If `.opsx-state.json` does not exist: write a minimal file:
+   ```json
+   {
+     "change": "<change-name>",
+     "phase": "merged-or-awaiting-merge",
+     "updated_at": "<ISO-8601>",
+     "pending_decision_request": null,
+     "idle_tracking": { "first_idle_at": null },
+     "retry_budget": {"peer_bus_emit_fails": 0}
+   }
+   ```
+
+   Do NOT tail-call any further skill after this step.
+
 **Guardrails**
 - Never run from `main` — check the branch first
 - Never push if there are uncommitted changes — surface them first
 - Use the proposal as the PR body if available — it's already well-written
 - Do not merge — merging happens from the main pane after CI passes
+- Do NOT re-open the PR if the ship-ready bus emit fails — log and exit cleanly

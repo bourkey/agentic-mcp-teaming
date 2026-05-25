@@ -230,7 +230,7 @@ Run this from the **main checkout** (`generic-consumer/`).
 
    **Emit `todos-updated` peer-bus event (optional; silently skipped when the bus is off)**
 
-   After commit succeeds, fan the event out to every active pane. See `openspec/specs/portal-opsx-peer-bus/spec.md` (post-archive) for the normative contract.
+   After commit succeeds, fan the event out to every active pane. See `openspec/changes/archive/2026-04-21-peer-session-bus/` for the normative contract.
 
    Gate: ALL of the following must be true, otherwise SKIP silently:
    - `$COORDINATOR_SESSION_NAME` is set (sync runs from main so the launcher set it),
@@ -254,12 +254,12 @@ Run this from the **main checkout** (`generic-consumer/`).
 
    **For each active pane** (always `main`; plus any of `frontend`/`backend`/`misc` whose `../generic-consumer-<area>/` sibling exists):
 
-   If `sessionToken` is not in working context, first call `register_session({ name: $COORDINATOR_SESSION_NAME, paneToken: $COORDINATOR_SESSION_TOKEN })` and cache the returned `sessionToken`.
+   If `sessionToken` is not in working context, first call `register_session({ name: $COORDINATOR_SESSION_NAME })` and cache the returned `sessionToken`.
 
    ```
    send_message({
      sessionToken: <sessionToken from context>,
-     to: "claude-<pane-name>",
+     to: "claude:<pane-name>",
      kind: "workflow-event",
      body: {
        event: "todos-updated",

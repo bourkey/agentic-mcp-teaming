@@ -357,18 +357,16 @@ An opt-in feature that lets multiple long-running Claude Code sessions (for exam
 
 ### Enabling
 
-Add a `peerBus` block to `mcp-config.json` and list the three tool names in `toolAllowlist`:
+Add a `peerBus` block to `mcp-config.json` and list the three tool names in `toolAllowlist`.
+
+#### tmux config
 
 ```json
 {
-  "toolAllowlist": [
-    "read_file", "write_file", "grep", "glob",
-    "invoke_agent", "submit_for_consensus", "advance_phase",
-    "get_session_state", "resolve_checkpoint",
-    "register_session", "send_message", "read_messages"
-  ],
+  "toolAllowlist": ["register_session", "send_message", "read_messages", "..."],
   "peerBus": {
     "enabled": true,
+    "backend": "tmux",
     "notifier": {
       "tmuxEnabled": true,
       "displayMessageFormat": "peer-bus: from {from} kind {kind}",
@@ -377,6 +375,33 @@ Add a `peerBus` block to `mcp-config.json` and list the three tool names in `too
   }
 }
 ```
+
+#### cmux config (macOS only)
+
+```json
+{
+  "toolAllowlist": ["register_session", "send_message", "read_messages", "..."],
+  "peerBus": {
+    "enabled": true,
+    "backend": "cmux",
+    "notifier": {
+      "cmuxEnabled": true,
+      "displayMessageFormat": "peer-bus: from {from} kind {kind}"
+    },
+    "autoWake": {
+      "allowedCommands": { "claude-inbox": "/opsx:peer-inbox" },
+      "debounceMs": 1000
+    }
+  }
+}
+```
+
+**cmux env vars required in each pane:**
+- `CMUX_SURFACE_ID` — auto-injected by cmux; no operator action needed.
+- `CMUX_WORKSPACE_ID` — auto-injected by cmux; no operator action needed.
+- `COORDINATOR_SESSION_NAME` — set manually in each pane's startup profile. Recommended: `export COORDINATOR_SESSION_NAME=$(cmux current-workspace --json 2>/dev/null | jq -r '.title // empty')`, or hardcode as `claude-main` etc.
+
+**Auto-wake note (cmux):** Auto-wake is currently disabled for cmux panes — `wake_suppressed { reason: "probe_disabled" }` appears in the audit log. This is expected behaviour pending cmux upstream fixes (#152/#153). All other peer bus features work normally.
 
 Removing any of the three tool names from `toolAllowlist` disables that specific tool.
 

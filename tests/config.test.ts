@@ -210,6 +210,77 @@ describe("peerBus config block", () => {
       await teardown();
     }
   });
+
+  it("absent backend defaults to 'tmux'", async () => {
+    await setup();
+    try {
+      const path = await writeConfig("no-backend.json", {
+        toolAllowlist: [],
+        peerBus: { enabled: true },
+      });
+      const config = loadConfig(path);
+      expect(config.peerBus?.backend).toBe("tmux");
+    } finally {
+      await teardown();
+    }
+  });
+
+  it("accepts backend: 'cmux'", async () => {
+    await setup();
+    try {
+      const path = await writeConfig("cmux-backend.json", {
+        toolAllowlist: [],
+        peerBus: { enabled: true, backend: "cmux" },
+      });
+      const config = loadConfig(path);
+      expect(config.peerBus?.backend).toBe("cmux");
+    } finally {
+      await teardown();
+    }
+  });
+
+  it("rejects invalid backend value", async () => {
+    await setup();
+    try {
+      const path = await writeConfig("bad-backend.json", {
+        toolAllowlist: [],
+        peerBus: { enabled: true, backend: "zellij" },
+      });
+      expect(() => loadConfig(path)).toThrow();
+    } finally {
+      await teardown();
+    }
+  });
+
+  it("accepts cmuxEnabled: true", async () => {
+    await setup();
+    try {
+      const path = await writeConfig("cmux-enabled.json", {
+        toolAllowlist: [],
+        peerBus: { enabled: true, backend: "cmux", notifier: { cmuxEnabled: true } },
+      });
+      const config = loadConfig(path);
+      expect(config.peerBus?.notifier.cmuxEnabled).toBe(true);
+    } finally {
+      await teardown();
+    }
+  });
+
+  it("rejects allowedCommands value containing backslash (prevents cmux \\n injection)", async () => {
+    await setup();
+    try {
+      const path = await writeConfig("backslash-cmd.json", {
+        toolAllowlist: [],
+        peerBus: {
+          enabled: true,
+          autoWake: { allowedCommands: { "test": "/cmd\\necho evil" } },
+        },
+      });
+      expect(() => loadConfig(path)).toThrow();
+    } finally {
+      await teardown();
+    }
+  });
 });
 
 describe("peerBus.autoWake schema — task 1.5-1.10", () => {

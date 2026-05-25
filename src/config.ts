@@ -22,6 +22,7 @@ export type ReviewerConfig = z.infer<typeof ReviewerEntry>;
 
 const PeerBusNotifier = z.object({
   tmuxEnabled: z.boolean().default(false),
+  cmuxEnabled: z.boolean().default(false),
   displayMessageFormat: z
     .string()
     .regex(
@@ -38,9 +39,10 @@ const PeerBusNotifier = z.object({
 const AUTO_WAKE_VALUE_MAX_BYTES = 512;
 // Rejects all C0 controls (including tab — tab at a shell prompt triggers
 // completion, which can select an unintended binary that the trailing Enter
-// then auto-confirms), DEL, and any non-ASCII-printable byte. Operator-authored
-// allowlist values never need these.
-const AUTO_WAKE_ILLEGAL_BYTE = /[\x00-\x1F\x7F]|[^\x20-\x7E]/;
+// then auto-confirms), DEL, any non-ASCII-printable byte, and backslash.
+// The backslash rejection prevents cmux CLI from auto-unescaping \n/\t
+// sequences in allowlist values into actual newlines/tabs in the pane.
+const AUTO_WAKE_ILLEGAL_BYTE = /[\x00-\x1F\x5C\x7F]|[^\x20-\x7E]/;
 
 const AllowedCommandsMap = z
   .record(z.string(), z.string())
@@ -98,6 +100,7 @@ export type PeerBusSessionConfig = z.infer<typeof PeerBusSession>;
 
 const PeerBus = z.object({
   enabled: z.boolean().default(false),
+  backend: z.enum(["tmux", "cmux"]).default("tmux"),
   notifier: PeerBusNotifier.default({}),
   autoWake: PeerBusAutoWake.optional(),
   session: PeerBusSession.optional(),
@@ -123,7 +126,7 @@ const McpConfig = z.object({
 });
 
 export type PeerBusConfig = z.infer<typeof PeerBus>;
-
+export type PeerBusBackend = "tmux" | "cmux";
 export type PeerBusAutoWakeConfig = z.infer<typeof PeerBusAutoWake>;
 
 export type McpConfig = z.infer<typeof McpConfig>;

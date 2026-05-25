@@ -4,6 +4,9 @@ import * as crypto from "crypto";
 import type { Logger } from "./logger.js";
 import { PEER_BUS_MAX_RESPONSE_BYTES, type PeerMessage } from "./message-store.js";
 
+const CMUX_SURFACE_ID_REGEX = /^surface:\d+$/;
+const CMUX_WORKSPACE_ID_REGEX = /^workspace:\d+$/;
+
 export const PEER_BUS_MAX_UNREAD = 10000;
 export { SESSION_NAME_REGEX } from "./peer-bus-constants.js";
 import { SESSION_NAME_REGEX, PEER_BUS_SESSION_DEFAULT_TTL_MS } from "./peer-bus-constants.js";
@@ -20,6 +23,16 @@ export interface SessionEntry {
   unreadMessageIds: string[];
   /** Opt-in allowlist key for auto-wake dispatch. Persisted to registry.json. */
   autoWakeKey?: string;
+  /** cmux surface ID (e.g. "surface:3") for wake-key injection. Persisted to registry.json. */
+  cmuxSurfaceId?: string;
+  /** cmux workspace ID (e.g. "workspace:2") for sidebar badge management. Persisted to registry.json. */
+  cmuxWorkspaceId?: string;
+  /**
+   * Backend-specific wake target: set to `cmuxSurfaceId` for cmux panes, absent for tmux panes.
+   * The dispatcher uses `entry.wakeTarget ?? entry.name` as the `target` argument to `sendKeys`.
+   * IN-MEMORY ONLY — never persisted to registry.json; recomputed from `cmuxSurfaceId` on load.
+   */
+  wakeTarget?: string;
 }
 
 export interface DrainResult {
@@ -115,7 +128,9 @@ export class SessionRegistry {
     name: string,
     paneToken: string | undefined,
     autoWakeKey?: string | null,
-    inactivityTtlMs = PEER_BUS_SESSION_DEFAULT_TTL_MS
+    inactivityTtlMs = PEER_BUS_SESSION_DEFAULT_TTL_MS,
+    cmuxSurfaceId?: string | null,
+    cmuxWorkspaceId?: string | null
   ): RegisterResult {
     if (!SESSION_NAME_REGEX.test(name)) {
       throw new RegistryError("invalid_session_name", `name '${name}' does not match required pattern`);
@@ -188,6 +203,23 @@ export class SessionRegistry {
       resolvedAutoWakeKey = autoWakeKey;
     }
 
+    // cmuxSurfaceId / cmuxWorkspaceId semantics (same three-value pattern):
+    //   undefined → preserve existing
+    //   null      → clear
+    //   string    → overwrite (always — never preserved from prior; validation is handler-side)
+    function resolveOptField(
+      next: string | null | undefined,
+      current: string | undefined
+    ): string | undefined {
+      if (next === null) return undefined;
+      if (next === undefined) return preserveExisting ? current : undefined;
+      return next;
+    }
+    const resolvedCmuxSurfaceId = resolveOptField(cmuxSurfaceId, existing?.cmuxSurfaceId);
+    const resolvedCmuxWorkspaceId = resolveOptField(cmuxWorkspaceId, existing?.cmuxWorkspaceId);
+    // wakeTarget is derived from cmuxSurfaceId; in-memory only
+    const resolvedWakeTarget = resolvedCmuxSurfaceId;
+
     const entry: SessionEntry =
       preserveExisting && existing !== undefined
         ? {
@@ -203,6 +235,9 @@ export class SessionRegistry {
             lastSeenAt: now,
             unreadMessageIds: existing.unreadMessageIds,
             ...(resolvedAutoWakeKey !== undefined ? { autoWakeKey: resolvedAutoWakeKey } : {}),
+            ...(resolvedCmuxSurfaceId !== undefined ? { cmuxSurfaceId: resolvedCmuxSurfaceId } : {}),
+            ...(resolvedCmuxWorkspaceId !== undefined ? { cmuxWorkspaceId: resolvedCmuxWorkspaceId } : {}),
+            ...(resolvedWakeTarget !== undefined ? { wakeTarget: resolvedWakeTarget } : {}),
           }
         : {
             name,
@@ -212,6 +247,9 @@ export class SessionRegistry {
             lastSeenAt: now,
             unreadMessageIds: [],
             ...(resolvedAutoWakeKey !== undefined ? { autoWakeKey: resolvedAutoWakeKey } : {}),
+            ...(resolvedCmuxSurfaceId !== undefined ? { cmuxSurfaceId: resolvedCmuxSurfaceId } : {}),
+            ...(resolvedCmuxWorkspaceId !== undefined ? { cmuxWorkspaceId: resolvedCmuxWorkspaceId } : {}),
+            ...(resolvedWakeTarget !== undefined ? { wakeTarget: resolvedWakeTarget } : {}),
           };
 
     this.sessions.set(name, entry);
@@ -271,6 +309,9 @@ export class SessionRegistry {
       lastSeenAt: entry.lastSeenAt,
       unreadMessageIds: [...entry.unreadMessageIds],
       ...(entry.autoWakeKey !== undefined ? { autoWakeKey: entry.autoWakeKey } : {}),
+      ...(entry.cmuxSurfaceId !== undefined ? { cmuxSurfaceId: entry.cmuxSurfaceId } : {}),
+      ...(entry.cmuxWorkspaceId !== undefined ? { cmuxWorkspaceId: entry.cmuxWorkspaceId } : {}),
+      // wakeTarget is in-memory only — not included in snapshot
     };
   }
 
@@ -287,6 +328,10 @@ export class SessionRegistry {
         lastSeenAt: snapshot.lastSeenAt,
         unreadMessageIds: [...snapshot.unreadMessageIds],
         ...(snapshot.autoWakeKey !== undefined ? { autoWakeKey: snapshot.autoWakeKey } : {}),
+        ...(snapshot.cmuxSurfaceId !== undefined ? { cmuxSurfaceId: snapshot.cmuxSurfaceId } : {}),
+        ...(snapshot.cmuxWorkspaceId !== undefined ? { cmuxWorkspaceId: snapshot.cmuxWorkspaceId } : {}),
+        // Recompute wakeTarget from cmuxSurfaceId
+        ...(snapshot.cmuxSurfaceId !== undefined ? { wakeTarget: snapshot.cmuxSurfaceId } : {}),
       });
       // wakeStates is in-memory only — leave it intact when restoring a prior entry snapshot
       // so the debounce window is not reset for a session that remains live.
@@ -454,8 +499,12 @@ export class SessionRegistry {
   }
 
   async persist(): Promise<void> {
-    const serialised: Record<string, SessionEntry> = {};
-    for (const [key, value] of this.sessions.entries()) serialised[key] = value;
+    const serialised: Record<string, Omit<SessionEntry, "wakeTarget">> = {};
+    for (const [key, value] of this.sessions.entries()) {
+      // wakeTarget is in-memory only — exclude from persisted JSON
+      const { wakeTarget: _wt, ...persisted } = value;
+      serialised[key] = persisted;
+    }
     const payload = { version: 1, sessions: serialised };
     const tmp = this.path + ".tmp";
     await fsp.writeFile(tmp, JSON.stringify(payload, null, 2), { encoding: "utf8", mode: 0o600 });
@@ -499,6 +548,32 @@ export class SessionRegistry {
         this.logger.error("registry: name/key mismatch, skipping", { key, name: e.name });
         continue;
       }
+      // Validate cmux fields against their regex; drop and warn if malformed
+      let loadedCmuxSurfaceId: string | undefined;
+      if (typeof (e as Record<string, unknown>)["cmuxSurfaceId"] === "string") {
+        const raw = (e as Record<string, unknown>)["cmuxSurfaceId"] as string;
+        if (CMUX_SURFACE_ID_REGEX.test(raw)) {
+          loadedCmuxSurfaceId = raw;
+        } else {
+          this.logger.warn("registry: dropping malformed cmuxSurfaceId on load", {
+            name: key,
+            value: JSON.stringify(raw),
+          });
+        }
+      }
+      let loadedCmuxWorkspaceId: string | undefined;
+      if (typeof (e as Record<string, unknown>)["cmuxWorkspaceId"] === "string") {
+        const raw = (e as Record<string, unknown>)["cmuxWorkspaceId"] as string;
+        if (CMUX_WORKSPACE_ID_REGEX.test(raw)) {
+          loadedCmuxWorkspaceId = raw;
+        } else {
+          this.logger.warn("registry: dropping malformed cmuxWorkspaceId on load", {
+            name: key,
+            value: JSON.stringify(raw),
+          });
+        }
+      }
+
       const cleaned: SessionEntry = {
         name: e.name,
         tokenHash: "", // wipe rotating token on load
@@ -512,6 +587,10 @@ export class SessionRegistry {
         ...(typeof e.autoWakeKey === "string" && e.autoWakeKey.length > 0
           ? { autoWakeKey: e.autoWakeKey }
           : {}),
+        ...(loadedCmuxSurfaceId !== undefined ? { cmuxSurfaceId: loadedCmuxSurfaceId } : {}),
+        ...(loadedCmuxWorkspaceId !== undefined ? { cmuxWorkspaceId: loadedCmuxWorkspaceId } : {}),
+        // Recompute wakeTarget from validated cmuxSurfaceId
+        ...(loadedCmuxSurfaceId !== undefined ? { wakeTarget: loadedCmuxSurfaceId } : {}),
       };
       this.sessions.set(key, cleaned);
     }

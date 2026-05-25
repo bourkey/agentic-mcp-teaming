@@ -591,7 +591,7 @@ Run this from the **main checkout** after a worktree session runs `/opsx:ship`.
 
 12. **Emit `rebased` and `slot-freed` peer-bus events (optional; silently skipped when the bus is off)**
 
-    Must run AFTER step 11 so `baseSha` reflects the post-sync HEAD of `origin/main`. See `openspec/specs/portal-opsx-peer-bus/spec.md` (post-archive) for the normative contract.
+    Must run AFTER step 11 so `baseSha` reflects the post-sync HEAD of `origin/main`. See `openspec/changes/archive/2026-04-21-peer-session-bus/` for the normative contract.
 
     Gate: ALL of the following must be true, otherwise SKIP silently:
     - `$COORDINATOR_SESSION_NAME` is set (this pane runs from main so the launcher set it),
@@ -604,12 +604,14 @@ Run this from the **main checkout** after a worktree session runs `/opsx:ship`.
     ```
     Every emit this invocation makes uses `$BUS_BASE_SHA` — do NOT re-run `git rev-parse` per recipient.
 
+    If `sessionToken` is not in working context, first call `register_session({ name: $COORDINATOR_SESSION_NAME })` and cache the returned `sessionToken`.
+
     **For each active area pane** (frontend / backend / misc whose sibling worktree currently exists — this includes the freed slot if it was rotated to a fresh branch, since the new branch is at the same `baseSha`) **whose rebase or rotation landed successfully**:
 
     ```
     send_message({
-      sessionToken: <cached session token>,
-      to: "claude:<area>",
+      sessionToken: <sessionToken from context>,
+      to: "claude-<area>",
       kind: "workflow-event",
       body: {
         event: "rebased",
@@ -623,8 +625,8 @@ Run this from the **main checkout** after a worktree session runs `/opsx:ship`.
 
     ```
     send_message({
-      sessionToken: <cached session token>,
-      to: "claude:main",
+      sessionToken: <sessionToken from context>,
+      to: "claude-main",
       kind: "workflow-event",
       body: {
         event: "slot-freed",
@@ -661,14 +663,14 @@ Run this from the **main checkout** after a worktree session runs `/opsx:ship`.
 
    **Case A — slot rotated to a queued change** (fresh branch from queue):
    ```
-   Switch to your <area> tmux pane and run:
+   Switch to your <area> pane and run:
    cd <freed-path> && claude
    /opsx:apply <next-change-name>
    ```
 
    **Case B — slot resumed from a paused branch** (in-progress work):
    ```
-   Switch to your <area> tmux pane and run:
+   Switch to your <area> pane and run:
    cd <freed-path> && claude
    /opsx:apply <resumed-change-name>
    ```

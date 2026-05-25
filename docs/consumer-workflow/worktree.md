@@ -359,14 +359,14 @@ Run this from the **main checkout** after `/opsx:propose` completes.
    **Branch:** feat/<change-name>
 
    ---
-   Next step — switch to your <area> tmux pane and run:
+   Next step — switch to your <area> pane and run:
    cd ../generic-consumer-<area> && claude
-   /opsx:review <change-name> --artifacts
+   /loop /opsx:auto-advance
    ```
 
 11. **Emit `worktree-ready` peer-bus event (optional; silently skipped when the bus is off)**
 
-   The Worktree Ready block has already been displayed — this step is additive and never blocks or contradicts the primary output. See `openspec/specs/portal-opsx-peer-bus/spec.md` (post-archive) for the normative contract.
+   The Worktree Ready block has already been displayed — this step is additive and never blocks or contradicts the primary output. See `openspec/changes/archive/2026-04-21-peer-session-bus/` for the normative contract.
 
    Gate: ALL of the following must be true, otherwise SKIP silently (no log, no error):
    - `$COORDINATOR_SESSION_NAME` is set,
@@ -375,12 +375,12 @@ Run this from the **main checkout** after `/opsx:propose` completes.
 
    When the gate is open, call:
 
-   If `sessionToken` is not in working context, first call `register_session({ name: $COORDINATOR_SESSION_NAME, paneToken: $COORDINATOR_SESSION_TOKEN })` and cache the returned `sessionToken`.
+   If `sessionToken` is not in working context, first call `register_session({ name: $COORDINATOR_SESSION_NAME })` and cache the returned `sessionToken`.
 
    ```
    send_message({
      sessionToken: <sessionToken from context>,
-     to: "claude-<area>",                   # the same area the worktree was created under
+     to: "claude:<area>",                   # the same area the worktree was created under
      kind: "workflow-event",
      body: {
        event: "worktree-ready",

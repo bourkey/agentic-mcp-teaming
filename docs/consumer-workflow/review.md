@@ -10,7 +10,7 @@ Run a multi-agent review of an OpenSpec change with an iterative fix-and-re-revi
    git branch --show-current
    ```
 
-   - If the result is `main`: **stop immediately**. Print "`/opsx:review` runs from a worktree, not the main checkout. Switch to your area's tmux pane (`cd ../generic-consumer-<area> && claude`) and re-run." Do not execute any further steps.
+   - If the result is `main`: **stop immediately**. Print "`/opsx:review` runs from a worktree, not the main checkout. Switch to your area's pane (`cd ../generic-consumer-<area> && claude`) and re-run." Do not execute any further steps.
    - If the result is an empty string (detached HEAD): **stop immediately**. Print "Check out a named feature branch before running `/opsx:review` — detached HEAD cannot be associated with a change." Do not execute any further steps.
    - Otherwise: proceed.
 
@@ -260,6 +260,113 @@ Run a multi-agent review of an OpenSpec change with an iterative fix-and-re-revi
    Next step — run in this pane:
    /opsx:archive <name>
    ```
+
+7. **Autonomous tail-call (guarded)**
+
+   This step fires only when ALL of the following are true:
+   - Steps 0–5 completed without error (no early exit)
+   - `OPSX_AUTONOMY_DISABLED` is NOT set to `1`
+
+   If `OPSX_AUTONOMY_DISABLED=1`: print to stderr `opsx-review: OPSX_AUTONOMY_DISABLED set — not chaining to next phase` and exit normally.
+
+   If any earlier step exited with an error: print to stderr `opsx-review: exited with error — not chaining to next phase` and exit normally.
+
+   **CLEAN outcome (zero critical, zero major introduced findings after the final round):**
+
+   Before chaining: write `.opsx-state.json` to record the clean result (so auto-advance can detect the correct phase if this tail-call is interrupted or OPSX_AUTONOMY_DISABLED fires in the chained skill). Read the existing `.opsx-state.json` BEFORE writing to extract the current `retry_budget.peer_bus_emit_fails` value — use the extracted value in the write; default to `0` only if the file does not exist or is corrupt. Always set all required top-level fields explicitly — do not rely solely on preserving existing fields, as the file may not exist or may have been written by a different change:
+   - **Artifacts mode CLEAN**: `change: "<change-name>"`, `phase: "review-artifacts-complete-clean"`, `pending_decision_request: null`, `idle_tracking: { first_idle_at: null }`, `updated_at: "<ISO-8601>"`, `retry_budget: <preserve existing or default {peer_bus_emit_fails: 0}>`
+   - **Implementation mode CLEAN**: `change: "<change-name>"`, `phase: "review-impl-complete-clean"`, `pending_decision_request: null`, `idle_tracking: { first_idle_at: null }`, `updated_at: "<ISO-8601>"`, `retry_budget: <preserve existing or default {peer_bus_emit_fails: 0}>`
+
+   Print one line to stderr: `opsx-review: CLEAN — chaining to <next-skill>`
+
+   - **Artifacts mode CLEAN** → invoke `/opsx:apply <change>` in the same turn.
+   - **Implementation mode CLEAN** → invoke `/opsx:archive <change>` in the same turn.
+
+   **NON-CLEAN outcome (critical or major introduced findings remain after MAX_ROUNDS):**
+
+   Do NOT tail-call. Instead:
+
+   If bus is available:
+   1. Generate a new UUID as `requestId`.
+   2. Read-modify-write `.opsx-state.json` BEFORE emitting (write-before-emit ordering) — preserve all top-level fields. Use the phase enum matching the current mode: `"review-artifacts-complete-decisions"` for artifacts mode, `"review-impl-complete-decisions"` for implementation mode:
+      ```json
+      {
+        "change": "<change-name>",
+        "phase": "<review-artifacts-complete-decisions OR review-impl-complete-decisions>",
+        "updated_at": "<ISO-8601>",
+        "pending_decision_request": {
+          "requestId": "<uuid>",
+          "emitted_at": "<ISO-8601>",
+          "originating_phase": "<same as phase above>",
+          "options": [
+            {"label": "fix-and-continue", "description": "<describe what re-reviewing and fixing entails>"},
+            {"label": "archive-anyway", "description": "<describe what archiving despite open findings means>"}
+          ]
+        },
+        "idle_tracking": { "first_idle_at": null },
+        "retry_budget": {
+          "peer_bus_emit_fails": <existing value or 0>
+        }
+      }
+      ```
+      Read the existing `.opsx-state.json` BEFORE writing to extract the current `retry_budget.peer_bus_emit_fails` value (default `0` if the file does not exist or is corrupt). Use the extracted value — never reset it. If `.opsx-state.json` does not exist or is corrupt, create it fresh with all fields with `peer_bus_emit_fails: 0`. Never write only `pending_decision_request` — auto-advance validates `change` at step 5 and will treat a partial file as corrupt.
+   3. Emit `workflow-event` to `claude-main` via an explicit `send_message({...})` call. Use the short `phase` form matching the spec enum: artifacts mode → `"review-artifacts"`, implementation mode → `"review-implementation"`. The `body` MUST be a JSON object literal — NOT a stringified JSON value — otherwise the coordinator rejects with `invalid_workflow_event_body: workflow-event body must be a JSON object`. `replyTo` MUST live ONLY inside `body`, never as a top-level argument to `send_message`:
+      ```
+      send_message({
+        sessionToken: <sessionToken from context>,
+        to: "claude-main",
+        kind: "workflow-event",
+        body: {
+          event: "decision-request",
+          change: "<change-name>",
+          phase: "<review-artifacts OR review-implementation>",
+          question: "<one-line human-readable summary of the scope decision>",
+          options: [
+            {label: "fix-and-continue", description: "<describe what re-reviewing and fixing entails>"},
+            {label: "archive-anyway", description: "<describe what archiving despite open findings means>"}
+          ],
+          context: {
+            findings_summary: "<brief summary, ≤ 500 chars>",
+            introduced_totals: {critical: <N>, major: <N>, minor: <N>},
+            review_artifact_path: "openspec/changes/<name>/"
+          },
+          requestId: "<same uuid>",
+          replyTo: "frontend"   // this pane's area: one of "frontend" | "backend" | "misc" — never "main"
+        }
+      })
+      ```
+      Option `label` values MUST be unique within the array. `replyTo` MUST be this pane's own area name from the allowlist `{frontend, backend, misc}` — do NOT set it to a different area, and never to `main`.
+
+   4. **If `send_message` fails** (transport error or named error after recovery): roll back `.opsx-state.json` by setting `pending_decision_request` to `null` and `idle_tracking: { first_idle_at: null }` (preserve `phase` as the `*-complete-decisions` value, `retry_budget`, and all other fields). The phase remaining as `*-complete-decisions` with null pending means the next auto-advance tick re-enters `emit-decision-request` with its own retry budgeting. Increment `retry_budget.peer_bus_emit_fails` in the rolled-back write. Exit without tail-calling.
+
+   5. Exit without tail-calling (on successful emit).
+
+   If bus is unavailable: write `.opsx-state.json` with `phase` set to the `*-complete-decisions` value and `pending_decision_request` pre-populated with `requestId: null` and the full question/options/context from the review findings (so auto-advance can reconstruct the emit payload when the bus recovers — without needing to re-run the review). Use `emitted_at: null` to mark the request as staged-but-not-emitted:
+   ```json
+   {
+     "change": "<change-name>",
+     "phase": "<review-artifacts-complete-decisions OR review-impl-complete-decisions>",
+     "updated_at": "<ISO-8601>",
+     "pending_decision_request": {
+       "requestId": null,
+       "emitted_at": null,
+       "originating_phase": "<same as phase above>",
+       "options": [
+         {"label": "fix-and-continue", "description": "<describe what re-reviewing and fixing entails>"},
+         {"label": "archive-anyway", "description": "<describe what archiving despite open findings means>"}
+       ],
+       "question": "<one-line human-readable summary>",
+       "context": {
+         "findings_summary": "<brief summary, ≤ 500 chars>",
+         "introduced_totals": {"critical": N, "major": N, "minor": N},
+         "review_artifact_path": "openspec/changes/<name>/"
+       }
+     },
+     "idle_tracking": { "first_idle_at": null },
+     "retry_budget": { "peer_bus_emit_fails": <existing value or 0> }
+   }
+   ```
+   Then print the pending decision summary to stdout as a free-text block and exit without tail-calling.
 
 **Guardrails**
 - Always resolve specs path and commit range in step 3 before spawning agents — never guess

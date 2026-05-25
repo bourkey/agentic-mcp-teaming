@@ -1,0 +1,5 @@
+schema: spec-driven
+created: 2026-04-29
+stage: partial
+archived_at: 2026-05-07
+note: Server-side registry improvements shipped (26/30 tasks). Consumer-side paneToken-as-tool-arg approach superseded by X-Pane-Token HTTP header pattern — see peer-bus-x-pane-token change.

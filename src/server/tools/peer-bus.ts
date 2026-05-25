@@ -14,6 +14,7 @@ import {
 } from "../../core/session-registry.js";
 import { SESSION_NAME_REGEX, UUID_V4_REGEX, PEER_BUS_SESSION_DEFAULT_TTL_MS } from "../../core/peer-bus-constants.js";
 import { fireTmuxNotifier } from "../../core/notifier-tmux.js";
+import { fireCmuxNotifier, setCmuxBadge } from "../../core/notifier-cmux.js";
 import type { Logger } from "../../core/logger.js";
 import type { PeerBusConfig, PeerBusAutoWakeConfig } from "../../config.js";
 import type { WakeDispatcher } from "../../core/wake-dispatcher.js";
@@ -21,6 +22,9 @@ import type { WakeDispatcher } from "../../core/wake-dispatcher.js";
 const PEER_KIND = z.enum(["workflow-event", "chat", "request", "response"]);
 
 const AUTO_WAKE_KEY_REGEX = /^[a-zA-Z0-9_-]{1,64}$/;
+const CMUX_SURFACE_ID_REGEX = /^surface:\d+$/;
+const CMUX_WORKSPACE_ID_REGEX = /^workspace:\d+$/;
+const CMUX_ID_MAX_BYTES = 64;
 
 export const RegisterSessionParams = z.object({
   name: z.string().regex(SESSION_NAME_REGEX, "name must match ^[a-z0-9][a-z0-9-]{0,62}$"),
@@ -34,6 +38,26 @@ export const RegisterSessionParams = z.object({
   autoWakeKey: z
     .string()
     .regex(AUTO_WAKE_KEY_REGEX, "invalid autoWakeKey format")
+    .nullable()
+    .optional(),
+  /**
+   * cmux surface identifier (e.g. "surface:3"). Three-value semantics:
+   *   undefined → preserve existing  |  null → clear  |  string → overwrite.
+   */
+  surfaceId: z
+    .string()
+    .regex(CMUX_SURFACE_ID_REGEX, "surfaceId must match ^surface:\\d+$")
+    .refine((v) => Buffer.byteLength(v, "utf8") <= CMUX_ID_MAX_BYTES, "surfaceId exceeds 64 bytes")
+    .nullable()
+    .optional(),
+  /**
+   * cmux workspace identifier (e.g. "workspace:2"). Three-value semantics:
+   *   undefined → preserve existing  |  null → clear  |  string → overwrite.
+   */
+  workspaceId: z
+    .string()
+    .regex(CMUX_WORKSPACE_ID_REGEX, "workspaceId must match ^workspace:\\d+$")
+    .refine((v) => Buffer.byteLength(v, "utf8") <= CMUX_ID_MAX_BYTES, "workspaceId exceeds 64 bytes")
     .nullable()
     .optional(),
 });
@@ -50,10 +74,17 @@ export const ReadMessagesParams = z.object({
   sessionToken: z.string(),
 });
 
+export interface PeerBusNotifierHooks {
+  /** Called after read_messages drains the mailbox for a cmux recipient. */
+  clearCmuxBadge?: (workspaceId: string) => void;
+}
+
 export interface PeerBusContext {
   registry: SessionRegistry;
   store: MessageStore;
   notifierConfig: PeerBusConfig["notifier"];
+  /** Active backend — governs which notifier path fires in send_message. */
+  backend?: "tmux" | "cmux";
   logger: Logger;
   audit: PeerBusAuditor;
   /** Pane identity credential extracted from X-Pane-Token header at SSE connection time. */
@@ -68,6 +99,8 @@ export interface PeerBusContext {
   wakeFireAndAwait?: boolean;
   /** TTL for stale-entry eviction on register. Defaults to 600000 (10 min). */
   inactivityTtlMs?: number;
+  /** Notifier hooks wired by the server at startup (cmux path). */
+  notifier?: PeerBusNotifierHooks;
 }
 
 export interface PeerBusAuditor {
@@ -125,6 +158,8 @@ function hashBody(body: unknown): string {
 function mapRegisterZodError(path: ReadonlyArray<string | number>): string {
   const root = path[0];
   if (root === "autoWakeKey") return "invalid_auto_wake_key";
+  if (root === "surfaceId") return "invalid_surface_id";
+  if (root === "workspaceId") return "invalid_workspace_id";
   return "invalid_session_name";
 }
 
@@ -148,7 +183,7 @@ export async function registerSessionTool(
       issue?.message ?? "invalid params"
     );
   }
-  const { name, autoWakeKey } = parsed.data;
+  const { name, autoWakeKey, surfaceId, workspaceId } = parsed.data;
 
   ctx.audit.log({
     tool: "register_session",
@@ -156,6 +191,8 @@ export async function registerSessionTool(
       name,
       paneToken: ctx.paneToken !== undefined ? "<redacted>" : undefined,
       autoWakeKey: autoWakeKey === undefined ? undefined : autoWakeKey === null ? "<default>" : "<present>",
+      surfaceId: surfaceId === undefined ? undefined : surfaceId === null ? "<clear>" : "<present>",
+      workspaceId: workspaceId === undefined ? undefined : workspaceId === null ? "<clear>" : "<present>",
     },
   });
 
@@ -210,7 +247,14 @@ export async function registerSessionTool(
   return ctx.registry.withLock(name, async () => {
     const snapshot = ctx.registry.snapshotEntry(name);
     try {
-      const { entry, rawToken } = ctx.registry.register(name, ctx.paneToken, resolvedAutoWakeKey, ctx.inactivityTtlMs ?? PEER_BUS_SESSION_DEFAULT_TTL_MS);
+      const { entry, rawToken } = ctx.registry.register(
+        name,
+        ctx.paneToken,
+        resolvedAutoWakeKey,
+        ctx.inactivityTtlMs ?? PEER_BUS_SESSION_DEFAULT_TTL_MS,
+        surfaceId,
+        workspaceId
+      );
       try {
         await ctx.registry.persist();
       } catch (persistErr) {
@@ -405,7 +449,32 @@ export async function sendMessageTool(
   // (send-keys injection) are INDEPENDENT downstream paths. Neither depends on
   // the other; both failures are absorbed so neither can cause `send_message`
   // to fail.
-  if (ctx.notifierConfig.tmuxEnabled) {
+  if (ctx.backend === "cmux" && ctx.notifierConfig.cmuxEnabled) {
+    const recipientEntry = ctx.registry.get(to);
+    const notifierPromise = (async () => {
+      await fireCmuxNotifier({
+        notifierConfig: ctx.notifierConfig,
+        from: fromEntry.name,
+        kind,
+        logger: ctx.logger,
+      });
+      // Set badge only on empty→non-empty mailbox transition (first unread message)
+      if (recipientEntry?.cmuxWorkspaceId !== undefined) {
+        const unreadCountBefore = recipientEntry.unreadMessageIds.length;
+        // unreadMessageIds was updated inside the mutex above; count includes the new message
+        if (unreadCountBefore === 1) {
+          await setCmuxBadge(recipientEntry.cmuxWorkspaceId, ctx.logger);
+        }
+      }
+    })();
+    if (ctx.notifierFireAndAwait === true) {
+      await notifierPromise;
+    } else {
+      notifierPromise.catch((err) => {
+        ctx.logger.error("peer-bus: cmux notifier promise rejected", { error: (err as Error).message });
+      });
+    }
+  } else if (ctx.notifierConfig.tmuxEnabled) {
     const notifierPromise = fireTmuxNotifier({
       recipientName: to,
       from: fromEntry.name,
@@ -513,6 +582,12 @@ export async function readMessagesTool(
         hasMore: drained.hasMore,
       },
     });
+
+    // Clear cmux sidebar badge after successful drain (fire-and-forget)
+    const callerEntry = ctx.registry.get(caller.name);
+    if (ctx.notifier?.clearCmuxBadge !== undefined && callerEntry?.cmuxWorkspaceId !== undefined) {
+      ctx.notifier.clearCmuxBadge(callerEntry.cmuxWorkspaceId);
+    }
 
     return successResult({ messages: drained.messages, hasMore: drained.hasMore });
   });

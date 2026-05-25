@@ -110,7 +110,7 @@ Run this from a **worktree** (never main). Drafts are filesystem-only — they a
    Drafts are filesystem-only (gitignored) and will not appear in `git status`.
 
    ---
-   Next step — switch to your main tmux pane and run:
+   Next step — switch to your main pane and run:
    /opsx:worktree <name>
    ```
 

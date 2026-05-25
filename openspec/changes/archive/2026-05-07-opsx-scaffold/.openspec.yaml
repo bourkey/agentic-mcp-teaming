@@ -1,0 +1,5 @@
+schema: spec-driven
+created: 2026-04-22
+stage: withdrawn
+withdrawn_at: 2026-05-07
+withdrawn_reason: Deferred — CLI distribution model being reconsidered. Consumer onboarding can be handled with simpler markdown-only approach without a scaffold subcommand.

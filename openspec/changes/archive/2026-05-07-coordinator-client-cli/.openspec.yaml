@@ -1,0 +1,5 @@
+schema: spec-driven
+created: 2026-04-22
+stage: withdrawn
+withdrawn_at: 2026-05-07
+withdrawn_reason: Superseded — paneToken moves to X-Pane-Token HTTP header, eliminating the need for a client CLI to handle token credential hygiene.

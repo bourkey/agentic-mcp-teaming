@@ -21,6 +21,8 @@ import { SessionRegistry } from "../core/session-registry.js";
 import { AuditLogger } from "../core/audit.js";
 import { WakeDispatcher } from "../core/wake-dispatcher.js";
 import { TmuxWakeBackend } from "../core/wake-backends/tmux.js";
+import { CmuxWakeBackend } from "../core/wake-backends/cmux.js";
+import { clearCmuxBadge } from "../core/notifier-cmux.js";
 import { SessionManager } from "../core/session.js";
 import { ConsensusLoop } from "../core/consensus.js";
 import { AgentRegistry } from "../core/registry.js";
@@ -288,15 +290,20 @@ export function createCoordinatorServer(opts: CoordinatorServerOptions): McpServ
       });
     }
 
+    const activePeerBackend = config.peerBus.backend ?? "tmux";
+
     // Build the wake dispatcher only when auto-wake is configured. The
     // dispatcher is optional on PeerBusContext — when absent, the live
     // bus behaves exactly as before this change (passive notifier only).
     let wakeDispatcher: WakeDispatcher | undefined;
     if (autoWake !== undefined && Object.keys(autoWake.allowedCommands).length > 0) {
-      const backend = new TmuxWakeBackend({ allowedPaneCommands: autoWake.allowedPaneCommands });
+      const wakeBackend =
+        activePeerBackend === "cmux"
+          ? new CmuxWakeBackend()
+          : new TmuxWakeBackend({ allowedPaneCommands: autoWake.allowedPaneCommands });
       wakeDispatcher = new WakeDispatcher({
         registry: peerRegistry,
-        backend,
+        backend: wakeBackend,
         logger: peerLogger,
         audit: {
           log: (entry) => {
@@ -312,6 +319,7 @@ export function createCoordinatorServer(opts: CoordinatorServerOptions): McpServ
       registry: peerRegistry,
       store: opts.peerBus.store,
       notifierConfig: config.peerBus.notifier,
+      backend: activePeerBackend,
       logger: peerLogger,
       audit: {
         log: (entry) => {
@@ -324,6 +332,18 @@ export function createCoordinatorServer(opts: CoordinatorServerOptions): McpServ
         ? { inactivityTtlMs: config.peerBus.session.inactivityTtlMs }
         : {}),
       ...(opts.paneToken !== undefined ? { paneToken: opts.paneToken } : {}),
+      // Wire cmux badge-clear hook when backend is cmux
+      ...(activePeerBackend === "cmux"
+        ? {
+            notifier: {
+              clearCmuxBadge: (workspaceId: string) => {
+                clearCmuxBadge(workspaceId, peerLogger).catch(() => {
+                  /* fire-and-forget — failure already logged inside clearCmuxBadge */
+                });
+              },
+            },
+          }
+        : {}),
     };
 
     const allowlist = new Set(config.toolAllowlist);

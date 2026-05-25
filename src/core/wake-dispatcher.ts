@@ -34,7 +34,8 @@ export interface DispatchWakeInput {
 export type SuppressReason =
   | "debounce"
   | "pane_state_unsafe"
-  | "key_no_longer_in_allowlist";
+  | "key_no_longer_in_allowlist"
+  | "probe_disabled";
 
 /**
  * Active-injection side of the peer-bus notifier path. Invoked once per
@@ -76,6 +77,8 @@ export class WakeDispatcher {
     if (entry === undefined || entry.autoWakeKey === undefined) return;
 
     const commandKey = entry.autoWakeKey;
+    // Use the backend-specific wake target (cmuxSurfaceId for cmux, session name for tmux)
+    const wakeTarget = entry.wakeTarget ?? target;
     const resolvedCommand = allowedCommands[commandKey];
     const now = Date.now();
 
@@ -90,9 +93,9 @@ export class WakeDispatcher {
     // window. Defensive try/catch so a custom backend that throws from
     // `isPaneStateSafe` (rather than returning `safe: false`) degrades to the
     // same suppression path as a genuine unsafe pane.
-    let probe: { safe: boolean; currentCommand: string };
+    let probe: { safe: boolean; currentCommand: string; suppressReason?: "probe_disabled" | "pane_state_unsafe" };
     try {
-      probe = await backend.isPaneStateSafe(target);
+      probe = await backend.isPaneStateSafe(wakeTarget);
     } catch (err) {
       logger.warn("wake-dispatcher: pane probe threw", {
         target,
@@ -102,14 +105,8 @@ export class WakeDispatcher {
       probe = { safe: false, currentCommand: PROBE_FAILED_SENTINEL };
     }
     if (!probe.safe) {
-      this.emitSuppressed(
-        now,
-        target,
-        commandKey,
-        messageId,
-        "pane_state_unsafe",
-        probe.currentCommand
-      );
+      const reason: SuppressReason = probe.suppressReason ?? "pane_state_unsafe";
+      this.emitSuppressed(now, target, commandKey, messageId, reason, probe.currentCommand);
       this.safeIncrement(target, "suppressed");
       return;
     }
@@ -126,7 +123,7 @@ export class WakeDispatcher {
 
     const dispatchedAt = new Date(now).toISOString();
     try {
-      await backend.sendKeys(target, resolvedCommand);
+      await backend.sendKeys(wakeTarget, resolvedCommand);
       this.safeAudit({
         type: "wake_dispatched",
         target,

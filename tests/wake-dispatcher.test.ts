@@ -462,3 +462,139 @@ describe("WakeDispatcher: audit content restrictions", () => {
     }
   });
 });
+
+describe("WakeDispatcher: cmux suppressReason and wakeTarget", () => {
+  it("emits wake_suppressed reason: probe_disabled when backend returns suppressReason: probe_disabled", async () => {
+    const registry = await makeRegistry();
+    registry.register("main", TEST_PANE_TOKEN, "claude-inbox");
+    const { backend, sendCalls } = makeBackend({
+      isPaneStateSafe: async () => ({
+        safe: false,
+        currentCommand: "<probe_disabled>",
+        suppressReason: "probe_disabled" as const,
+      }),
+    });
+    const { audit, entries } = makeAuditor();
+    const { logger } = makeLogger();
+
+    const d = new WakeDispatcher({ registry, backend, logger, audit, allowedCommands: ALLOWLIST, debounceMs: 1000 });
+    await d.maybeDispatch({ target: "main", messageId: "m1" });
+
+    expect(sendCalls).toEqual([]);
+    const suppressed = entries.find((e) => e["type"] === "wake_suppressed")!;
+    expect(suppressed["reason"]).toBe("probe_disabled");
+    expect(registry.getWakeState("main").wakesSuppressed).toBe(1);
+  });
+
+  it("falls back to pane_state_unsafe when no suppressReason is set", async () => {
+    const registry = await makeRegistry();
+    registry.register("main", TEST_PANE_TOKEN, "claude-inbox");
+    const { backend } = makeBackend({
+      isPaneStateSafe: async () => ({ safe: false, currentCommand: "sudo" }),
+    });
+    const { audit, entries } = makeAuditor();
+    const { logger } = makeLogger();
+
+    const d = new WakeDispatcher({ registry, backend, logger, audit, allowedCommands: ALLOWLIST, debounceMs: 1000 });
+    await d.maybeDispatch({ target: "main", messageId: "m1" });
+
+    const suppressed = entries.find((e) => e["type"] === "wake_suppressed")!;
+    expect(suppressed["reason"]).toBe("pane_state_unsafe");
+  });
+
+  it("uses entry.wakeTarget as backend target when set", async () => {
+    const registry = await makeRegistry();
+    registry.register("main", TEST_PANE_TOKEN, "claude-inbox", undefined, "surface:7");
+    const paneCalls: string[] = [];
+    const sendCalls: Array<{ target: string; cmd: string }> = [];
+    const { backend } = makeBackend({
+      isPaneStateSafe: async (t) => { paneCalls.push(t); return { safe: true, currentCommand: "claude" }; },
+      sendKeys: async (t, c) => { sendCalls.push({ target: t, cmd: c }); },
+    });
+    const { audit } = makeAuditor();
+    const { logger } = makeLogger();
+
+    const d = new WakeDispatcher({ registry, backend, logger, audit, allowedCommands: ALLOWLIST, debounceMs: 0 });
+    await d.maybeDispatch({ target: "main", messageId: "m1" });
+
+    expect(paneCalls).toEqual(["surface:7"]);
+    expect(sendCalls[0]?.target).toBe("surface:7");
+  });
+
+  it("falls back to entry.name as target when wakeTarget is absent", async () => {
+    const registry = await makeRegistry();
+    registry.register("main", TEST_PANE_TOKEN, "claude-inbox");
+    const sendCalls: Array<{ target: string; cmd: string }> = [];
+    const { backend } = makeBackend({
+      sendKeys: async (t, c) => { sendCalls.push({ target: t, cmd: c }); },
+    });
+    const { audit } = makeAuditor();
+    const { logger } = makeLogger();
+
+    const d = new WakeDispatcher({ registry, backend, logger, audit, allowedCommands: ALLOWLIST, debounceMs: 0 });
+    await d.maybeDispatch({ target: "main", messageId: "m1" });
+
+    expect(sendCalls[0]?.target).toBe("main");
+  });
+});
+
+describe("SessionRegistry: cmux field load validation", () => {
+  it("valid cmuxSurfaceId and cmuxWorkspaceId survive load", async () => {
+    const { logger } = makeLogger();
+    const reg = new SessionRegistry(join(dir, "registry.json"), logger);
+    reg.register("main", undefined, undefined, undefined, "surface:5", "workspace:2");
+    await reg.persist();
+
+    const reg2 = new SessionRegistry(join(dir, "registry.json"), logger);
+    await reg2.load();
+    const entry = reg2.get("main");
+    expect(entry?.cmuxSurfaceId).toBe("surface:5");
+    expect(entry?.cmuxWorkspaceId).toBe("workspace:2");
+    expect(entry?.wakeTarget).toBe("surface:5");
+  });
+
+  it("malformed cmuxSurfaceId is dropped on load with warn", async () => {
+    const { logger, warnings } = makeLogger();
+    const reg = new SessionRegistry(join(dir, "registry.json"), logger);
+    reg.register("main", undefined);
+    await reg.persist();
+
+    // Inject malformed value directly into registry.json
+    const { readFile, writeFile } = await import("fs/promises");
+    const raw = JSON.parse(await readFile(join(dir, "registry.json"), "utf8")) as Record<string, unknown>;
+    const sessions = raw["sessions"] as Record<string, unknown>;
+    (sessions["main"] as Record<string, unknown>)["cmuxSurfaceId"] = "--evil";
+    await writeFile(join(dir, "registry.json"), JSON.stringify(raw), "utf8");
+
+    const reg2 = new SessionRegistry(join(dir, "registry.json"), logger);
+    await reg2.load();
+    const entry = reg2.get("main");
+    expect(entry?.cmuxSurfaceId).toBeUndefined();
+    expect(entry?.wakeTarget).toBeUndefined();
+    expect(warnings.some((w) => w.message.includes("malformed cmuxSurfaceId"))).toBe(true);
+  });
+
+  it("absent cmuxSurfaceId loads successfully without warn", async () => {
+    const { logger, warnings } = makeLogger();
+    const reg = new SessionRegistry(join(dir, "registry.json"), logger);
+    reg.register("main", undefined);
+    await reg.persist();
+
+    const reg2 = new SessionRegistry(join(dir, "registry.json"), logger);
+    await reg2.load();
+    const entry = reg2.get("main");
+    expect(entry?.cmuxSurfaceId).toBeUndefined();
+    expect(warnings.filter((w) => w.message.includes("cmux"))).toHaveLength(0);
+  });
+
+  it("wakeTarget is NOT persisted to registry.json", async () => {
+    const reg = new SessionRegistry(join(dir, "registry.json"), makeLogger().logger);
+    reg.register("main", undefined, undefined, undefined, "surface:5");
+    await reg.persist();
+
+    const { readFile } = await import("fs/promises");
+    const raw = await readFile(join(dir, "registry.json"), "utf8");
+    expect(raw).not.toContain("wakeTarget");
+    expect(raw).toContain("surface:5"); // cmuxSurfaceId is persisted
+  });
+});

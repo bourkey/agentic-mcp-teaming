@@ -16,8 +16,18 @@ export interface WakeBackend {
    * On any probe failure (backend unreachable, pane not found, non-zero exit)
    * the implementation SHALL return `{ safe: false, currentCommand: "<probe_failed>" }`
    * so the dispatcher treats probe failure as unsafe — never dispatches.
+   *
+   * `suppressReason` is optional: when set, the dispatcher uses it as the
+   * `wake_suppressed` audit reason instead of the default `"pane_state_unsafe"`.
+   * Backends whose probe is permanently disabled (e.g. `CmuxWakeBackend`) set
+   * `suppressReason: "probe_disabled"` to distinguish the case from a genuinely
+   * unsafe pane.
    */
-  isPaneStateSafe(target: string): Promise<{ safe: boolean; currentCommand: string }>;
+  isPaneStateSafe(target: string): Promise<{
+    safe: boolean;
+    currentCommand: string;
+    suppressReason?: "probe_disabled" | "pane_state_unsafe";
+  }>;
 
   /**
    * Deliver the resolved command as keystrokes to the target pane. Throws
