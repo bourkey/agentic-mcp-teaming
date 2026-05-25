@@ -45,8 +45,9 @@ export type SuppressReason =
  *   1. Resolve `autoWakeKey` against the live allowlist.
  *        Stale key → emit `wake_suppressed { reason: "key_no_longer_in_allowlist" }`, bump counter, done.
  *   2. Probe pane state via backend.
- *        Unsafe → emit `wake_suppressed { reason: "pane_state_unsafe", currentCommand }`, bump counter, done.
- *        (Debounce timestamp NOT updated — pane unsafety is a non-event for the window.)
+ *        Unsafe or probe disabled → emit `wake_suppressed` with reason `pane_state_unsafe`
+ *        (tmux backend) or `probe_disabled` (cmux backend), bump counter, done.
+ *        (Debounce timestamp NOT updated — pane unsafety/disabled probe is a non-event for the window.)
  *   3. Check-and-set the debounce timestamp through `registry.tryConsumeWakeWindow`
  *      inside the existing per-session mutex. This atomically closes the same-tick race:
  *      a concurrent invocation observing the same recipient within the window sees the

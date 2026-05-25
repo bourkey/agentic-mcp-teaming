@@ -23,17 +23,23 @@ export function scrubForCmux(s: string): string {
   const scrubbed = s.replace(/[\x00-\x1F\x7F\n\r]/g, "");
   const buf = Buffer.from(scrubbed, "utf8");
   if (buf.byteLength <= NOTIFY_BODY_MAX_BYTES) return scrubbed;
-  // Truncate at byte boundary without splitting a multibyte sequence
-  let end = NOTIFY_BODY_MAX_BYTES - 3; // reserve 3 bytes for '…' (U+2026, 3 UTF-8 bytes)
+  // Truncate at byte boundary without splitting a multibyte sequence.
+  // Reserve 3 bytes for U+2026 (…); the alignment loop may back up further
+  // so the final result is always ≤ NOTIFY_BODY_MAX_BYTES bytes.
+  let end = NOTIFY_BODY_MAX_BYTES - 3;
   // Back off until we're not mid-sequence (first byte of a sequence is 0b0xxxxxxx or 0b11xxxxxx)
   while (end > 0 && (buf[end]! & 0xc0) === 0x80) end -= 1;
   return buf.slice(0, end).toString("utf8") + "…";
 }
 
 function formatNotifyBody(config: PeerBusConfig["notifier"], from: string, kind: string): string {
-  return config.displayMessageFormat
+  const assembled = config.displayMessageFormat
     .replace(/\{from\}/g, scrubForCmux(from))
     .replace(/\{kind\}/g, scrubForCmux(kind));
+  // Apply a final byte cap to the fully-assembled string. Individual substitutions
+  // are scrubbed above but the template itself has no byte-length constraint,
+  // so the assembled result can exceed NOTIFY_BODY_MAX_BYTES.
+  return scrubForCmux(assembled);
 }
 
 export interface FireCmuxNotifierArgs {

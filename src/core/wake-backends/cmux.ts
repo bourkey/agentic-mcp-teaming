@@ -23,6 +23,11 @@ export interface CmuxWakeBackendOptions {
  * than the generic `pane_state_unsafe`. This makes the disabled probe
  * distinguishable in the audit log.
  *
+ * Note: `register_session` with an `autoWakeKey` on a cmux coordinator will
+ * succeed, but every dispatch will be suppressed with `probe_disabled` until
+ * upstream adds a pane_current_command API. Operators can observe this in the
+ * audit log and should not expect auto-wake to fire for cmux panes.
+ *
  * `sendKeys` uses two sequential `execFile` calls:
  *   1. `cmux send-surface --surface <id> <command>` — text injection
  *   2. `cmux send-key-surface --surface <id> enter` — Enter key press
@@ -52,6 +57,10 @@ export class CmuxWakeBackend implements WakeBackend {
         { timeout: WAKE_CMUX_TIMEOUT_MS }
       );
     } catch (err) {
+      const e = err as NodeJS.ErrnoException;
+      if (e.code === "ENOENT") {
+        throw asWakeBackendError(new Error("cmux binary not found — check PATH"), "type");
+      }
       throw asWakeBackendError(err, "type");
     }
     try {
@@ -61,6 +70,10 @@ export class CmuxWakeBackend implements WakeBackend {
         { timeout: WAKE_CMUX_TIMEOUT_MS }
       );
     } catch (err) {
+      const e = err as NodeJS.ErrnoException;
+      if (e.code === "ENOENT") {
+        throw asWakeBackendError(new Error("cmux binary not found — check PATH"), "enter");
+      }
       throw asWakeBackendError(err, "enter");
     }
   }

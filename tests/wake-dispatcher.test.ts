@@ -598,3 +598,36 @@ describe("SessionRegistry: cmux field load validation", () => {
     expect(raw).toContain("surface:5"); // cmuxSurfaceId is persisted
   });
 });
+
+describe("SessionRegistry: malformed cmuxWorkspaceId dropped on load with warn", () => {
+  it("malformed cmuxWorkspaceId is dropped on load with warn", async () => {
+    const { logger, warnings } = makeLogger();
+    const reg = new SessionRegistry(join(dir, "registry.json"), logger);
+    reg.register("main", undefined);
+    await reg.persist();
+
+    // Inject malformed value
+    const { readFile, writeFile } = await import("fs/promises");
+    const raw = JSON.parse(await readFile(join(dir, "registry.json"), "utf8")) as Record<string, unknown>;
+    const sessions = raw["sessions"] as Record<string, unknown>;
+    (sessions["main"] as Record<string, unknown>)["cmuxWorkspaceId"] = "--evil";
+    await writeFile(join(dir, "registry.json"), JSON.stringify(raw), "utf8");
+
+    const reg2 = new SessionRegistry(join(dir, "registry.json"), logger);
+    await reg2.load();
+    const entry = reg2.get("main");
+    expect(entry?.cmuxWorkspaceId).toBeUndefined();
+    expect(warnings.some((w) => w.message.includes("malformed cmuxWorkspaceId"))).toBe(true);
+  });
+
+  it("valid cmuxWorkspaceId survives load", async () => {
+    const { logger } = makeLogger();
+    const reg = new SessionRegistry(join(dir, "registry.json"), logger);
+    reg.register("main", undefined, undefined, undefined, undefined, "workspace:4");
+    await reg.persist();
+
+    const reg2 = new SessionRegistry(join(dir, "registry.json"), logger);
+    await reg2.load();
+    expect(reg2.get("main")?.cmuxWorkspaceId).toBe("workspace:4");
+  });
+});

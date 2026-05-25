@@ -754,3 +754,179 @@ describe("register_session: surfaceId and workspaceId (cmux)", () => {
     expect(params["workspaceId"]).toBe("<present>");
   });
 });
+
+describe("register_session: workspaceId three-value semantics", () => {
+  it("absent workspaceId preserves existing cmuxWorkspaceId on re-registration", async () => {
+    const ctx = makeContext({ paneToken: TEST_PANE_TOKEN });
+    await registerSessionTool(ctx, { name: "frontend", workspaceId: "workspace:2" });
+    await registerSessionTool(ctx, { name: "frontend" }); // no workspaceId
+    expect(ctx.registry.get("frontend")?.cmuxWorkspaceId).toBe("workspace:2");
+  });
+
+  it("null workspaceId clears cmuxWorkspaceId", async () => {
+    const ctx = makeContext({ paneToken: TEST_PANE_TOKEN });
+    await registerSessionTool(ctx, { name: "frontend", workspaceId: "workspace:2" });
+    await registerSessionTool(ctx, { name: "frontend", workspaceId: null });
+    expect(ctx.registry.get("frontend")?.cmuxWorkspaceId).toBeUndefined();
+  });
+
+  it("string workspaceId always overwrites existing", async () => {
+    const ctx = makeContext({ paneToken: TEST_PANE_TOKEN });
+    await registerSessionTool(ctx, { name: "frontend", workspaceId: "workspace:2" });
+    await registerSessionTool(ctx, { name: "frontend", workspaceId: "workspace:9" });
+    expect(ctx.registry.get("frontend")?.cmuxWorkspaceId).toBe("workspace:9");
+  });
+});
+
+describe("sendMessageTool: cmux badge-set transition", () => {
+  function mockExecFileOk(): void {
+    vi.mocked(execFile).mockImplementation(((_cmd, _args, _opts, cb) => {
+      setImmediate(() => (cb as (err: null, stdout: string, stderr: string) => void)(null, "", ""));
+      return {} as ReturnType<typeof execFile>;
+    }) as unknown as typeof execFile);
+  }
+
+  it("setCmuxBadge called on first unread message delivery (empty→non-empty transition)", async () => {
+    mockExecFileOk();
+    const ctx = makeContext({
+      paneToken: TEST_PANE_TOKEN,
+      backend: "cmux",
+      notifierConfig: { ...DEFAULT_NOTIFIER, cmuxEnabled: true },
+      notifierFireAndAwait: true,
+      wakeFireAndAwait: true,
+    });
+    // Register sender and recipient with cmuxWorkspaceId
+    const senderToken = (parseSuccess(
+      await registerSessionTool(ctx, { name: "main" })
+    ) as { sessionToken: string }).sessionToken;
+    await registerSessionTool(ctx, { name: "frontend", surfaceId: "surface:3", workspaceId: "workspace:2" });
+
+    vi.clearAllMocks();
+    mockExecFileOk();
+
+    await sendMessageTool(ctx, {
+      sessionToken: senderToken,
+      to: "frontend",
+      kind: "chat",
+      body: "hello",
+    });
+
+    const cmuxCalls = vi.mocked(execFile).mock.calls
+      .filter(([cmd]) => cmd === "cmux")
+      .map(([, args]) => args as string[]);
+    const badgeCall = cmuxCalls.find((a) => a[0] === "set-status");
+    expect(badgeCall).toEqual(["set-status", "peer-bus", "unread", "--workspace", "workspace:2"]);
+  });
+
+  it("setCmuxBadge NOT called on second message when mailbox already has unread", async () => {
+    mockExecFileOk();
+    const ctx = makeContext({
+      paneToken: TEST_PANE_TOKEN,
+      backend: "cmux",
+      notifierConfig: { ...DEFAULT_NOTIFIER, cmuxEnabled: true },
+      notifierFireAndAwait: true,
+    });
+    const senderToken = (parseSuccess(
+      await registerSessionTool(ctx, { name: "main" })
+    ) as { sessionToken: string }).sessionToken;
+    await registerSessionTool(ctx, { name: "frontend", workspaceId: "workspace:2" });
+
+    // First message
+    await sendMessageTool(ctx, { sessionToken: senderToken, to: "frontend", kind: "chat", body: "msg1" });
+
+    vi.clearAllMocks();
+    mockExecFileOk();
+
+    // Second message — mailbox already has 1 unread, should NOT set badge again
+    await sendMessageTool(ctx, { sessionToken: senderToken, to: "frontend", kind: "chat", body: "msg2" });
+
+    const cmuxCalls = vi.mocked(execFile).mock.calls
+      .filter(([cmd]) => cmd === "cmux")
+      .map(([, args]) => args as string[]);
+    const badgeCalls = cmuxCalls.filter((a) => a[0] === "set-status");
+    expect(badgeCalls).toHaveLength(0);
+  });
+
+  it("cmux notifier NOT fired when backend is 'tmux'", async () => {
+    const ctx = makeContext({
+      paneToken: TEST_PANE_TOKEN,
+      backend: "tmux",
+      notifierConfig: { ...DEFAULT_NOTIFIER, cmuxEnabled: true, tmuxEnabled: false },
+      notifierFireAndAwait: true,
+    });
+    const senderToken = (parseSuccess(
+      await registerSessionTool(ctx, { name: "main" })
+    ) as { sessionToken: string }).sessionToken;
+    await registerSessionTool(ctx, { name: "frontend" });
+
+    await sendMessageTool(ctx, { sessionToken: senderToken, to: "frontend", kind: "chat", body: "x" });
+
+    const cmuxCalls = vi.mocked(execFile).mock.calls.filter(([cmd]) => cmd === "cmux");
+    expect(cmuxCalls).toHaveLength(0);
+  });
+
+  it("cmux notifier NOT fired when backend is 'cmux' but cmuxEnabled is false", async () => {
+    const ctx = makeContext({
+      paneToken: TEST_PANE_TOKEN,
+      backend: "cmux",
+      notifierConfig: { ...DEFAULT_NOTIFIER, cmuxEnabled: false },
+      notifierFireAndAwait: true,
+    });
+    const senderToken = (parseSuccess(
+      await registerSessionTool(ctx, { name: "main" })
+    ) as { sessionToken: string }).sessionToken;
+    await registerSessionTool(ctx, { name: "frontend" });
+
+    await sendMessageTool(ctx, { sessionToken: senderToken, to: "frontend", kind: "chat", body: "x" });
+
+    const cmuxCalls = vi.mocked(execFile).mock.calls.filter(([cmd]) => cmd === "cmux");
+    expect(cmuxCalls).toHaveLength(0);
+  });
+});
+
+describe("readMessagesTool: clearCmuxBadge hook", () => {
+  it("clearCmuxBadge called with correct workspaceId after successful drain", async () => {
+    const clearCmuxBadge = vi.fn();
+    const ctx = makeContext({
+      paneToken: TEST_PANE_TOKEN,
+      notifier: { clearCmuxBadge },
+    });
+
+    // Register two panes and send a message
+    const senderToken = (parseSuccess(
+      await registerSessionTool(ctx, { name: "main" })
+    ) as { sessionToken: string }).sessionToken;
+    const recipientResult = parseSuccess(
+      await registerSessionTool(ctx, { name: "frontend", workspaceId: "workspace:5" })
+    ) as { sessionToken: string };
+    const recipientToken = recipientResult.sessionToken;
+
+    await sendMessageTool(ctx, { sessionToken: senderToken, to: "frontend", kind: "chat", body: "hi" });
+
+    // Read messages as recipient
+    await readMessagesTool(ctx, { sessionToken: recipientToken });
+
+    expect(clearCmuxBadge).toHaveBeenCalledOnce();
+    expect(clearCmuxBadge).toHaveBeenCalledWith("workspace:5");
+  });
+
+  it("clearCmuxBadge NOT called when cmuxWorkspaceId absent", async () => {
+    const clearCmuxBadge = vi.fn();
+    const ctx = makeContext({
+      paneToken: TEST_PANE_TOKEN,
+      notifier: { clearCmuxBadge },
+    });
+    const senderToken = (parseSuccess(
+      await registerSessionTool(ctx, { name: "main" })
+    ) as { sessionToken: string }).sessionToken;
+    // No workspaceId on recipient
+    const recipientToken = (parseSuccess(
+      await registerSessionTool(ctx, { name: "frontend" })
+    ) as { sessionToken: string }).sessionToken;
+
+    await sendMessageTool(ctx, { sessionToken: senderToken, to: "frontend", kind: "chat", body: "hi" });
+    await readMessagesTool(ctx, { sessionToken: recipientToken });
+
+    expect(clearCmuxBadge).not.toHaveBeenCalled();
+  });
+});

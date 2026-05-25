@@ -286,7 +286,9 @@ export function createCoordinatorServer(opts: CoordinatorServerOptions): McpServ
     for (const { name, removedKey } of cleared) {
       peerLogger.warn("peer-bus: autoWakeKey cleared on load; key no longer in allowlist", {
         session: name,
-        removedKey,
+        // JSON.stringify to neutralise any residual control chars that passed the
+        // AUTO_WAKE_KEY_REGEX guard (belt-and-suspenders against log injection).
+        removedKey: JSON.stringify(removedKey),
       });
     }
 

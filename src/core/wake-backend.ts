@@ -3,8 +3,9 @@
  * (allowlist resolution, debounce, audit, counters, failure handling); the
  * backend owns the backend-specific I/O (pane-state probe, keystroke delivery).
  *
- * v1 ships one implementation, `TmuxWakeBackend`. The interface is shaped so a
- * future zellij / kitty / screen backend is a drop-in replacement.
+ * Ships two implementations: `TmuxWakeBackend` (full probe + send-keys) and
+ * `CmuxWakeBackend` (probe permanently disabled pending upstream; send-keys active).
+ * The interface is shaped so additional backends (zellij, kitty, screen) are drop-in replacements.
  */
 export interface WakeBackend {
   /**

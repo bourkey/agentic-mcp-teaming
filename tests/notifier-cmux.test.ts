@@ -211,3 +211,31 @@ describe("clearCmuxBadge", () => {
     expect(logger.warn).toHaveBeenCalled();
   });
 });
+
+describe("scrubForCmux: multibyte truncation boundary", () => {
+  it("truncates correctly at a 2-byte UTF-8 boundary (é = U+00E9, 2 bytes)", () => {
+    // 'é' is 2 bytes in UTF-8 — 200 × 2 = 400 bytes
+    const input = "é".repeat(200);
+    const result = scrubForCmux(input);
+    expect(Buffer.byteLength(result, "utf8")).toBeLessThanOrEqual(256);
+    expect(result.endsWith("…")).toBe(true);
+    // Verify the result is valid UTF-8 (Buffer.from → toString round-trip is lossless)
+    expect(Buffer.from(result, "utf8").toString("utf8")).toBe(result);
+  });
+
+  it("truncates correctly at a 3-byte UTF-8 boundary (€ = U+20AC, 3 bytes)", () => {
+    // '€' is 3 bytes — 100 × 3 = 300 bytes
+    const input = "€".repeat(100);
+    const result = scrubForCmux(input);
+    expect(Buffer.byteLength(result, "utf8")).toBeLessThanOrEqual(256);
+    expect(result.endsWith("…")).toBe(true);
+    expect(Buffer.from(result, "utf8").toString("utf8")).toBe(result);
+  });
+
+  it("does not truncate a string that is exactly 256 bytes", () => {
+    const input = "a".repeat(256);
+    const result = scrubForCmux(input);
+    expect(result).toBe(input);
+    expect(result.endsWith("…")).toBe(false);
+  });
+});

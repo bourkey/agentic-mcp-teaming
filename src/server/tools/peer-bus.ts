@@ -394,6 +394,9 @@ export async function sendMessageTool(
     ctx.registry.addUnread(to, messageId);
     ctx.registry.touch(fromEntry.name);
     ctx.registry.touch(to);
+    // Capture the new unread count inside the mutex so the badge-set check
+    // outside is not susceptible to a concurrent send_message inflating the count.
+    const newUnreadCount = ctx.registry.get(to)?.unreadMessageIds.length ?? 0;
     try {
       await ctx.registry.persist();
     } catch (err) {
@@ -404,7 +407,7 @@ export async function sendMessageTool(
       });
       return { error: "response_internal_error" as const, message: "failed to persist registry after send" };
     }
-    return { ok: true as const };
+    return { ok: true as const, newUnreadCount };
   });
 
   if ("error" in result) {
@@ -451,27 +454,32 @@ export async function sendMessageTool(
   // to fail.
   if (ctx.backend === "cmux" && ctx.notifierConfig.cmuxEnabled) {
     const recipientEntry = ctx.registry.get(to);
-    const notifierPromise = (async () => {
-      await fireCmuxNotifier({
-        notifierConfig: ctx.notifierConfig,
-        from: fromEntry.name,
-        kind,
-        logger: ctx.logger,
-      });
-      // Set badge only on empty→non-empty mailbox transition (first unread message)
-      if (recipientEntry?.cmuxWorkspaceId !== undefined) {
-        const unreadCountBefore = recipientEntry.unreadMessageIds.length;
-        // unreadMessageIds was updated inside the mutex above; count includes the new message
-        if (unreadCountBefore === 1) {
-          await setCmuxBadge(recipientEntry.cmuxWorkspaceId, ctx.logger);
-        }
-      }
-    })();
+    // Notify and badge-set are independent fire-and-forget paths — decouple them so
+    // an unexpected throw in fireCmuxNotifier (before its own error absorption) does
+    // not silently skip the badge-set call.
+    const notifyPromise = fireCmuxNotifier({
+      notifierConfig: ctx.notifierConfig,
+      from: fromEntry.name,
+      kind,
+      logger: ctx.logger,
+    });
+    // Set badge only on empty→non-empty mailbox transition (first unread message).
+    // Use the count captured inside the mutex rather than re-reading the live reference.
+    const newUnreadCount = "newUnreadCount" in result ? (result as { newUnreadCount: number }).newUnreadCount : 0;
+    const badgePromise = (
+      recipientEntry?.cmuxWorkspaceId !== undefined && newUnreadCount === 1
+        ? setCmuxBadge(recipientEntry.cmuxWorkspaceId, ctx.logger)
+        : Promise.resolve()
+    );
     if (ctx.notifierFireAndAwait === true) {
-      await notifierPromise;
+      await notifyPromise;
+      await badgePromise;
     } else {
-      notifierPromise.catch((err) => {
+      notifyPromise.catch((err) => {
         ctx.logger.error("peer-bus: cmux notifier promise rejected", { error: (err as Error).message });
+      });
+      badgePromise.catch((err) => {
+        ctx.logger.error("peer-bus: cmux badge promise rejected", { error: (err as Error).message });
       });
     }
   } else if (ctx.notifierConfig.tmuxEnabled) {
@@ -583,10 +591,11 @@ export async function readMessagesTool(
       },
     });
 
-    // Clear cmux sidebar badge after successful drain (fire-and-forget)
-    const callerEntry = ctx.registry.get(caller.name);
-    if (ctx.notifier?.clearCmuxBadge !== undefined && callerEntry?.cmuxWorkspaceId !== undefined) {
-      ctx.notifier.clearCmuxBadge(callerEntry.cmuxWorkspaceId);
+    // Clear cmux sidebar badge after successful drain (fire-and-forget).
+    // Use caller directly — it is the authenticated SessionEntry; re-fetching from
+    // the registry risks reading a concurrently updated entry with a different workspaceId.
+    if (ctx.notifier?.clearCmuxBadge !== undefined && caller.cmuxWorkspaceId !== undefined) {
+      ctx.notifier.clearCmuxBadge(caller.cmuxWorkspaceId);
     }
 
     return successResult({ messages: drained.messages, hasMore: drained.hasMore });

@@ -6,6 +6,23 @@ import { PEER_BUS_MAX_RESPONSE_BYTES, type PeerMessage } from "./message-store.j
 
 const CMUX_SURFACE_ID_REGEX = /^surface:\d+$/;
 const CMUX_WORKSPACE_ID_REGEX = /^workspace:\d+$/;
+const AUTO_WAKE_KEY_REGEX = /^[a-zA-Z0-9_-]{1,64}$/;
+
+/**
+ * Three-value semantics for optional cmux fields on register():
+ *   undefined → preserve existing value (recovery re-registrations)
+ *   null      → explicitly clear the field
+ *   string    → overwrite with new value (always; never preserved from prior)
+ */
+function resolveOptField(
+  next: string | null | undefined,
+  current: string | undefined,
+  preserveExisting: boolean
+): string | undefined {
+  if (next === null) return undefined;
+  if (next === undefined) return preserveExisting ? current : undefined;
+  return next;
+}
 
 export const PEER_BUS_MAX_UNREAD = 10000;
 export { SESSION_NAME_REGEX } from "./peer-bus-constants.js";
@@ -203,20 +220,9 @@ export class SessionRegistry {
       resolvedAutoWakeKey = autoWakeKey;
     }
 
-    // cmuxSurfaceId / cmuxWorkspaceId semantics (same three-value pattern):
-    //   undefined → preserve existing
-    //   null      → clear
-    //   string    → overwrite (always — never preserved from prior; validation is handler-side)
-    function resolveOptField(
-      next: string | null | undefined,
-      current: string | undefined
-    ): string | undefined {
-      if (next === null) return undefined;
-      if (next === undefined) return preserveExisting ? current : undefined;
-      return next;
-    }
-    const resolvedCmuxSurfaceId = resolveOptField(cmuxSurfaceId, existing?.cmuxSurfaceId);
-    const resolvedCmuxWorkspaceId = resolveOptField(cmuxWorkspaceId, existing?.cmuxWorkspaceId);
+    // cmuxSurfaceId / cmuxWorkspaceId — same three-value semantics as autoWakeKey
+    const resolvedCmuxSurfaceId = resolveOptField(cmuxSurfaceId, existing?.cmuxSurfaceId, preserveExisting);
+    const resolvedCmuxWorkspaceId = resolveOptField(cmuxWorkspaceId, existing?.cmuxWorkspaceId, preserveExisting);
     // wakeTarget is derived from cmuxSurfaceId; in-memory only
     const resolvedWakeTarget = resolvedCmuxSurfaceId;
 
@@ -584,7 +590,7 @@ export class SessionRegistry {
         registeredAt: e.registeredAt,
         lastSeenAt: e.lastSeenAt,
         unreadMessageIds: e.unreadMessageIds.filter((x): x is string => typeof x === "string"),
-        ...(typeof e.autoWakeKey === "string" && e.autoWakeKey.length > 0
+        ...(typeof e.autoWakeKey === "string" && AUTO_WAKE_KEY_REGEX.test(e.autoWakeKey)
           ? { autoWakeKey: e.autoWakeKey }
           : {}),
         ...(loadedCmuxSurfaceId !== undefined ? { cmuxSurfaceId: loadedCmuxSurfaceId } : {}),
