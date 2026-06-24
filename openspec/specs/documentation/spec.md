@@ -1,4 +1,10 @@
-## ADDED Requirements
+# Documentation Specification
+
+## Purpose
+
+Defines the documentation deliverables for the project — README, architecture, MCP tool reference, and session format — and the requirement that docs stay co-located with the code.
+
+## Requirements
 
 ### Requirement: README is the primary entry point
 The project SHALL provide a `readme.md` at the repository root that enables a new user to go from zero to a running dry-run session without consulting any other document.

@@ -1,4 +1,10 @@
-## MODIFIED Requirements
+# Agent Orchestration Specification
+
+## Purpose
+
+Defines how the coordinator initializes a teaming session and routes artifacts to the configured agents through `invoke_agent` MCP tool calls.
+
+## Requirements
 
 ### Requirement: Coordinator initializes a teaming session
 The coordinator SHALL initialize a session with a unique ID, load and validate the agent registry (CLI availability in PATH, at least one agent declared, at least one revising agent, at least one implementing agent), and initialize session-level spawn tracking counters before any workflow phase begins.

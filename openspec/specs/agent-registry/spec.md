@@ -1,4 +1,10 @@
-## ADDED Requirements
+# Agent Registry Specification
+
+## Purpose
+
+Defines how the coordinator loads a named agent registry from configuration — each agent's specialty, its permission to invoke other agents, and its phase-relevant capabilities.
+
+## Requirements
 
 ### Requirement: Coordinator loads a named agent registry from configuration
 The coordinator SHALL load an `agents` map from `mcp-config.json` at startup, where each key is an agent ID and each value declares the CLI path, an optional specialty description, and capability flags controlling whether the agent may review artifacts, revise artifacts, implement tasks, and invoke other agents. The coordinator SHALL validate that every declared CLI is present in PATH before any workflow phase begins.

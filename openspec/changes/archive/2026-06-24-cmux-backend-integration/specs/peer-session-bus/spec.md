@@ -89,6 +89,24 @@ Note: the combination of `backend` and `cmuxEnabled` governs both subsystems. Se
 - **WHEN** `peerBus.backend: "tmux"` and `peerBus.notifier.cmuxEnabled: true` are both set
 - **THEN** the config SHALL parse successfully; the coordinator SHALL use the tmux backend; the `cmuxEnabled` field has no effect unless `backend: "cmux"` is active
 
+### Requirement: `wake_suppressed` reason union includes `"probe_disabled"`; `WakeBackend.isPaneStateSafe` gains optional `suppressReason` field
+
+The `WakeBackend.isPaneStateSafe(target)` return type SHALL gain an optional `suppressReason?: "probe_disabled" | "pane_state_unsafe"` field. When `safe: false`, the dispatcher SHALL use `suppressReason` if present to determine the audit reason; if absent the dispatcher falls back to `"pane_state_unsafe"`. The constant `PROBE_DISABLED_SENTINEL = "<probe_disabled>"` SHALL be defined in `peer-bus-constants.ts`.
+
+The `reason` field of `wake_suppressed` audit entries SHALL be one of `"debounce" | "pane_state_unsafe" | "key_no_longer_in_allowlist" | "probe_disabled"`. `"probe_disabled"` is emitted when the backend's `isPaneStateSafe` returns `suppressReason: "probe_disabled"` — exclusively for backends whose safety probe is disabled (currently `CmuxWakeBackend`). Operators can distinguish a genuinely unsafe pane (`pane_state_unsafe`) from a disabled probe (`probe_disabled`) in the audit log.
+
+#### Scenario: cmux backend suppression uses reason `probe_disabled`
+- **WHEN** the wake dispatcher invokes `CmuxWakeBackend.isPaneStateSafe` for a cmux recipient
+- **THEN** the returned value SHALL have `suppressReason: "probe_disabled"` AND the dispatcher SHALL emit `wake_suppressed { reason: "probe_disabled" }`, NOT `{ reason: "pane_state_unsafe" }`
+
+#### Scenario: tmux backend still uses reason `pane_state_unsafe`
+- **WHEN** `TmuxWakeBackend.isPaneStateSafe` returns `{ safe: false }` for a non-allowlisted command (no `suppressReason` set)
+- **THEN** the dispatcher SHALL emit `wake_suppressed { reason: "pane_state_unsafe" }` as before
+
+#### Scenario: Backends without `suppressReason` default to `pane_state_unsafe`
+- **WHEN** `isPaneStateSafe` returns `{ safe: false, currentCommand: "sudo" }` with no `suppressReason` field
+- **THEN** the dispatcher SHALL emit `wake_suppressed { reason: "pane_state_unsafe" }`
+
 ## MODIFIED Requirements
 
 ### Requirement: `TmuxWakeBackend.sendKeys` makes two literal-mode `execFile` calls with no shell interpolation
@@ -115,21 +133,3 @@ When the `wakeDispatcher` has resolved a recipient's `autoWakeKey` against the a
 #### Scenario: tmux-format target passes `SESSION_NAME_REGEX` validation
 - **WHEN** `TmuxWakeBackend.sendKeys("claude-main", "/opsx:peer-inbox")` is called
 - **THEN** `"claude-main"` SHALL pass `SESSION_NAME_REGEX` validation; two `execFile` calls SHALL proceed
-
-### Requirement: `wake_suppressed` reason union includes `"probe_disabled"`; `WakeBackend.isPaneStateSafe` gains optional `suppressReason` field
-
-The `WakeBackend.isPaneStateSafe(target)` return type SHALL gain an optional `suppressReason?: "probe_disabled" | "pane_state_unsafe"` field. When `safe: false`, the dispatcher SHALL use `suppressReason` if present to determine the audit reason; if absent the dispatcher falls back to `"pane_state_unsafe"`. The constant `PROBE_DISABLED_SENTINEL = "<probe_disabled>"` SHALL be defined in `peer-bus-constants.ts`.
-
-The `reason` field of `wake_suppressed` audit entries SHALL be one of `"debounce" | "pane_state_unsafe" | "key_no_longer_in_allowlist" | "probe_disabled"`. `"probe_disabled"` is emitted when the backend's `isPaneStateSafe` returns `suppressReason: "probe_disabled"` — exclusively for backends whose safety probe is disabled (currently `CmuxWakeBackend`). Operators can distinguish a genuinely unsafe pane (`pane_state_unsafe`) from a disabled probe (`probe_disabled`) in the audit log.
-
-#### Scenario: cmux backend suppression uses reason `probe_disabled`
-- **WHEN** the wake dispatcher invokes `CmuxWakeBackend.isPaneStateSafe` for a cmux recipient
-- **THEN** the returned value SHALL have `suppressReason: "probe_disabled"` AND the dispatcher SHALL emit `wake_suppressed { reason: "probe_disabled" }`, NOT `{ reason: "pane_state_unsafe" }`
-
-#### Scenario: tmux backend still uses reason `pane_state_unsafe`
-- **WHEN** `TmuxWakeBackend.isPaneStateSafe` returns `{ safe: false }` for a non-allowlisted command (no `suppressReason` set)
-- **THEN** the dispatcher SHALL emit `wake_suppressed { reason: "pane_state_unsafe" }` as before
-
-#### Scenario: Backends without `suppressReason` default to `pane_state_unsafe`
-- **WHEN** `isPaneStateSafe` returns `{ safe: false, currentCommand: "sudo" }` with no `suppressReason` field
-- **THEN** the dispatcher SHALL emit `wake_suppressed { reason: "pane_state_unsafe" }`

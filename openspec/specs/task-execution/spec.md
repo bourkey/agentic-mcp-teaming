@@ -1,4 +1,10 @@
-## ADDED Requirements
+# Task Execution Specification
+
+## Purpose
+
+Defines how implementation tasks are divided between agents, implemented by their assigned agent, reviewed before acceptance, and integrated through Git using isolated worktrees for concurrent work.
+
+## Requirements
 
 ### Requirement: Tasks are divided between agents before implementation begins
 After the tasks artifact reaches consensus, the coordinator SHALL present the task list to both agents and produce a task assignment: each task is assigned to a primary implementer (Claude or Codex) and a reviewer (the other agent).
@@ -45,7 +51,7 @@ The coordinator SHALL integrate task changes into the session branch only after 
 - **THEN** the coordinator SHALL rebase the task branch onto the current session branch head inside the task worktree, regenerate the diff, and require re-review before merge; if the rebase conflicts, the coordinator SHALL pause integration, log the conflict, and require human resolution before the task can be accepted
 
 ### Requirement: Concurrent implementation uses isolated worktrees
-The coordinator MAY allow multiple implementation tasks to proceed concurrently only when each task is assigned its own Git worktree and the coordinator tracks the base commit and declared file/module scope for each task.
+When the coordinator runs multiple implementation tasks concurrently, each task SHALL be assigned its own Git worktree, and the coordinator SHALL track the base commit and declared file/module scope for each task.
 
 #### Scenario: Concurrent tasks avoid shared checkout mutation
 - **WHEN** two approved implementation tasks run at the same time

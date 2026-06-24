@@ -1,4 +1,10 @@
-## ADDED Requirements
+# Spawn Controls Specification
+
+## Purpose
+
+Defines the guardrails the coordinator enforces on every `invoke_agent` call — registry membership, call-tree depth, concurrent sub-invocation count, per-session invocation budget — and the audit logging of every rejection.
+
+## Requirements
 
 ### Requirement: Coordinator enforces a registry membership check on every `invoke_agent` call
 Before spawning any CLI subprocess, the coordinator SHALL verify that the requested `agentId` exists in the loaded agent registry. Calls referencing unknown agent IDs SHALL be rejected immediately.

@@ -1,4 +1,10 @@
-## ADDED Requirements
+# Invoke Agent Tool Specification
+
+## Purpose
+
+Defines the single generic `invoke_agent` MCP tool that replaces the per-agent invoke tools, including transport propagation for sub-invocation and snapshot-context injection for agents that do not natively speak MCP.
+
+## Requirements
 
 ### Requirement: Coordinator exposes a single generic `invoke_agent` MCP tool
 The coordinator MCP server SHALL expose one tool named `invoke_agent` accepting `agentId`, `prompt`, optional `context`, and an `invocationContext` object (`invocationId`, `parentInvocationId`, `depth`). All agent invocations — whether initiated by the coordinator loop or by another agent — SHALL use this tool exclusively.

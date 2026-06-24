@@ -1,4 +1,10 @@
-## ADDED Requirements
+# N-Agent Consensus Specification
+
+## Purpose
+
+Generalizes the consensus loop to operate over an array of N configured agents, aggregating their feedback into a single revision request and treating partial CLI failures as blocks.
+
+## Requirements
 
 ### Requirement: Consensus loop operates over an array of configured agents
 The consensus loop SHALL accept a list of reviewer agent IDs from the registry rather than two hardcoded roles. All reviewer agents SHALL be invoked concurrently for the first-pass review of each round. The loop SHALL require unanimous approval to reach consensus.
