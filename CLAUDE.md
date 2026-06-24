@@ -3,17 +3,21 @@
 ## Build & test
 
 ```bash
-npm run build        # tsc compile
-npm test             # vitest (111 tests)
+npm run build        # tsc compile + chmod +x dist/index.js
+npm test             # vitest run (~369 cases across tests/*.test.ts)
+npm run lint         # eslint src tests
+npm run test:watch   # vitest in watch mode
+npx vitest run tests/workflow-tools.test.ts          # single file
+npx vitest run -t "consensus"                        # single test by name
 npm run build && npm test  # full verification pass
 ```
 
-All changes must pass `npm test` before being considered complete.
+All changes must pass `npm test` before being considered complete. `npm start` runs the one-shot `start` mode; `npm run serve` runs `scripts/clean-stale-sessions.sh` first, then the long-running `serve` mode (the operational mode for the peer bus — see below).
 
 ## Architecture overview
 
 - **`src/config.ts`** — Zod schema for `mcp-config.json`. All config parsing goes here; never read raw JSON elsewhere.
-- **`src/server/index.ts`** — MCP coordinator server (SSE/HTTP transport). Tool registration lives here. Import tool handlers from `src/server/tools/`.
+- **`src/server/index.ts`** — MCP coordinator server. `startHttpServer` serves two transports concurrently: legacy HTTP+SSE at `GET /sse` + `POST /message`, and Streamable HTTP at `/mcp` (independent per-transport session maps, shared `serverFactory`). Tool registration lives here. Import tool handlers from `src/server/tools/`.
 - **`src/server/tools/agents.ts`** — `invokeAgentTool` and `invokeReviewerTool`. Agent spawning guardrails enforced here.
 - **`src/server/tools/filesystem.ts`** — `read_file`, `write_file`, `grep`, `glob`. All paths resolved through `safeReadPath`/`assertWithinRoot`.
 - **`src/server/tools/workflow.ts`** — Consensus loop, phase advancement, checkpoint resolution.
