@@ -54,3 +54,14 @@
 - [ ] 5.4 Restart consumer tmux session via `start-team-session.sh` — confirm `COORDINATOR_SESSION_TOKEN` is in each pane env
 - [ ] 5.5 Trigger a turn in a consumer pane — confirm `register_session({ name })` succeeds and sessionToken is returned (no transcript leak, no sandbox block)
 - [ ] 5.6 Run `/clear` in a consumer pane; trigger another turn — confirm re-registration succeeds without operator intervention
+
+## 6. cmux consumer token path (coordinator-repo deliverables)
+
+- [x] 6.1 Update `.claude/skills/peer-bus-session/SKILL.md` (canonical): in the cmux setup guidance, document sourcing a stable per-pane `COORDINATOR_SESSION_TOKEN` via the generate-and-cache snippet (cache file `${XDG_STATE_HOME:-$HOME/.local/state}/agentic-mcp-teaming/tokens/<COORDINATOR_SESSION_NAME>`, generated with `openssl rand -base64 32`). State that the `X-Pane-Token` header is delivered identically to tmux and that without the token a cmux pane falls back to legacy unowned semantics
+- [x] 6.2 Update `docs/peer-bus-runbook.md`: add a cmux token-setup section (generate-and-cache snippet + cmux `.mcp.json` headers block) and make the `COORDINATOR_SESSION_TOKEN` troubleshooting rows backend-aware (tmux launcher vs cmux profile snippet) rather than tmux-only
+
+## 7. cmux consumer token path (external — consumer repo, not in this checkout)
+
+- [ ] 7.1 Add the generate-and-cache `COORDINATOR_SESSION_TOKEN` snippet to each cmux pane startup profile / `.envrc` (alongside the existing `COORDINATOR_SESSION_NAME` export)
+- [ ] 7.2 Add `"headers": { "X-Pane-Token": "${COORDINATOR_SESSION_TOKEN}" }` to the coordinator entry in the cmux consumer `.mcp.json`
+- [ ] 7.3 Verify: restart a cmux pane and confirm the cached token is reused (`register_session({ name })` succeeds after coordinator restart / `/clear` without operator intervention); confirm two cmux panes get distinct tokens

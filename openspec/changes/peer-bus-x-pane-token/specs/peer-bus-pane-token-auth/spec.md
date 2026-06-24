@@ -54,6 +54,28 @@ The `register_session` MCP tool SHALL NOT include a `paneToken` field in its inp
 - **WHEN** `register_session({ name: "new-pane" })` is called on a connection with no `X-Pane-Token` header AND no registry entry exists for that name
 - **THEN** registration SHALL succeed; no `paneTokenHash` SHALL be stored; the entry MAY be re-claimed by any caller (legacy unowned semantics)
 
+### Requirement: cmux consumer panes source a stable per-pane `COORDINATOR_SESSION_TOKEN`
+
+cmux has no launcher script equivalent to the tmux `start-team-session.sh`, so a cmux consumer pane SHALL establish its own `COORDINATOR_SESSION_TOKEN` and deliver it through the same `X-Pane-Token` header mechanism. No cmux-specific coordinator code path is required — the server extracts and validates `X-Pane-Token` identically regardless of backend.
+
+The token a cmux pane supplies SHALL be:
+- **Stable** across coordinator restarts and Claude Code `/clear` — the same pane presents the same token over its lifetime, so its `paneTokenHash` keeps matching and re-registration succeeds without operator intervention.
+- **Unique per pane** — distinct `COORDINATOR_SESSION_NAME` panes present distinct tokens, so one pane cannot re-claim another's registry entry.
+
+The RECOMMENDED mechanism is a generate-and-cache snippet in the cmux pane startup profile: generate once with `openssl rand -base64 32`, cache in a per-name state file (`${XDG_STATE_HOME:-$HOME/.local/state}/agentic-mcp-teaming/tokens/<COORDINATOR_SESSION_NAME>`), and export the cached value on every start. The pane's `.mcp.json` carries `"X-Pane-Token": "${COORDINATOR_SESSION_TOKEN}"` exactly as the tmux consumer does.
+
+#### Scenario: cmux pane reuses a cached token across restarts
+- **WHEN** a cmux pane starts, generates-and-caches a token on first run, and later restarts (coordinator restart, machine reboot, or cmux app relaunch)
+- **THEN** the restarted pane SHALL export the same cached `COORDINATOR_SESSION_TOKEN`; its `register_session({ name })` SHALL match the stored `paneTokenHash` and succeed without operator intervention
+
+#### Scenario: distinct cmux panes present distinct tokens
+- **WHEN** two cmux panes with different `COORDINATOR_SESSION_NAME` values run the generate-and-cache snippet
+- **THEN** each SHALL export a different `COORDINATOR_SESSION_TOKEN` (separate per-name state files); neither pane's token SHALL match the other's `paneTokenHash`
+
+#### Scenario: cmux pane with no cached token falls back to legacy unowned
+- **WHEN** a cmux pane connects without `COORDINATOR_SESSION_TOKEN` set (snippet not configured) AND its name has no stored `paneTokenHash`
+- **THEN** registration SHALL succeed as legacy unowned semantics; the pane loses cross-restart re-claim protection until the token is configured
+
 ### Requirement: paneToken never appears in audit logs, tool arguments, or transcripts
 
 The `paneToken` value extracted from `X-Pane-Token` SHALL be redacted to `"<redacted>"` in all audit log entries. It SHALL NOT appear in any MCP tool argument, MCP tool result, conversation transcript, skill output, or error message. Zod validation errors on the tool schema SHALL NOT reference a `paneToken` field (because the field no longer exists on the schema).

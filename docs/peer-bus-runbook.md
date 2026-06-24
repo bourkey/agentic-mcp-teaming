@@ -93,7 +93,37 @@ export COORDINATOR_SESSION_NAME=claude-main
 Name each workspace after its peer identity: `claude-main`, `claude-frontend`,
 `claude-backend`, or `claude-misc`. The name must match `^[a-z0-9][a-z0-9-]{0,62}$`.
 
-**3. Restart the coordinator and launch Claude Code in each pane.**
+**3. Set a stable `COORDINATOR_SESSION_TOKEN` in the same profile.**
+
+cmux has no launcher to generate the pane credential (the tmux side gets it
+from `start-team-session.sh`), so each cmux pane sources its own. Add a
+generate-and-cache snippet after the name export — generated once, reused on
+every restart:
+
+```bash
+TOK_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/agentic-mcp-teaming/tokens"
+mkdir -p "$TOK_DIR"
+TOK_FILE="$TOK_DIR/$COORDINATOR_SESSION_NAME"
+[ -s "$TOK_FILE" ] || openssl rand -base64 32 | tr -d '\n' > "$TOK_FILE"
+export COORDINATOR_SESSION_TOKEN="$(cat "$TOK_FILE")"
+```
+
+Then add the header to the cmux consumer `.mcp.json` coordinator entry (same
+as the tmux consumer):
+
+```json
+"coordinator": {
+  "url": "http://localhost:3100/sse",
+  "headers": { "X-Pane-Token": "${COORDINATOR_SESSION_TOKEN}" }
+}
+```
+
+Caching by `$COORDINATOR_SESSION_NAME` keeps the token stable across coordinator
+restarts and `/clear` (re-registration stays self-healing) and unique per pane
+(no cross-pane re-claim). Without it a cmux pane still registers, but only as
+legacy unowned semantics — it loses cross-restart re-claim protection.
+
+**4. Restart the coordinator and launch Claude Code in each pane.**
 
 `CMUX_SURFACE_ID` and `CMUX_WORKSPACE_ID` are auto-injected by cmux.
 The `peer-bus-session` skill detects cmux context automatically and
@@ -236,7 +266,7 @@ curl -sS --max-time 5 -o /dev/null -w '%{http_code}\n' \
 |---|---|---|
 | `200` / 2xx | Coordinator listening, both auth paths fine | Re-check `claude mcp get coordinator` output — likely `.mcp.json` parse error or a stale override |
 | `401` (both tokens exported, non-empty) | Coordinator listening, one or both rejected | Rotate/re-export the failing token. To isolate which: re-run the probe omitting one `-H` at a time |
-| `401` (`COORDINATOR_SESSION_TOKEN` unset or empty) | Coordinator listening, X-Pane-Token header was empty/missing | Export `COORDINATOR_SESSION_TOKEN` (normally set by the launcher; if missing, restart via your tmux launcher), restart panes |
+| `401` (`COORDINATOR_SESSION_TOKEN` unset or empty) | Coordinator listening, X-Pane-Token header was empty/missing | Export `COORDINATOR_SESSION_TOKEN` (tmux: set by `start-team-session.sh`; cmux: by the generate-and-cache snippet in §2a), then restart panes |
 | `401` (`COORDINATOR_AUTH_TOKEN` unset or empty) | Coordinator listening, Claude Code sent `Bearer ` (empty) | Export `COORDINATOR_AUTH_TOKEN`, restart panes |
 | `000` / `curl: (7)` | Coordinator not listening | Start the coordinator (see §1) |
 | `000` after 5-second hang | `--max-time` fired before headers — inconclusive | Rerun with `-m 10`, or check the coordinator log |
@@ -285,10 +315,10 @@ could rewrite your terminal.
 **Behavior.** Re-registration is self-healing. The coordinator stores
 `sha256($COORDINATOR_SESSION_TOKEN)` as the durable identity credential
 for each pane name. When a pane re-registers, the X-Pane-Token header on
-the SSE handshake carries `$COORDINATOR_SESSION_TOKEN` (stable for the
-lifetime of a tmux session), and the coordinator overwrites the stale
-entry and issues a fresh `sessionToken`. No operator intervention is
-required.
+the SSE handshake carries `$COORDINATOR_SESSION_TOKEN` (tmux: stable for
+the lifetime of a tmux session; cmux: stable via the per-name cached token
+from the §2a snippet), and the coordinator overwrites the stale entry and
+issues a fresh `sessionToken`. No operator intervention is required.
 
 Pane names are client-scoped. Claude uses `claude-main`,
 `claude-frontend`, `claude-backend`, `claude-misc`; Codex uses
@@ -305,9 +335,10 @@ Diagnose and fix in order:
 
 1. Confirm `$COORDINATOR_SESSION_TOKEN` is exported in the pane shell:
    `printenv COORDINATOR_SESSION_TOKEN | wc -c` should return a non-zero
-   count. If empty, the launcher did not export the token (the worktree
-   may have failed the bus-artifact check, or the pane was started outside
-   the launcher).
+   count. If empty: on tmux, the launcher did not export the token (the
+   worktree may have failed the bus-artifact check, or the pane was started
+   outside the launcher); on cmux, the generate-and-cache snippet (§2a) is
+   missing from the pane profile.
 2. Confirm `.mcp.json` carries the X-Pane-Token header:
    `claude mcp get coordinator` should show `headers.X-Pane-Token` with
    value `${COORDINATOR_SESSION_TOKEN}` (literal placeholder, not

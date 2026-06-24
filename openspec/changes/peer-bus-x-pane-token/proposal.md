@@ -10,6 +10,7 @@ The `peer-bus-pane-token-auth` change correctly identified that pane identity ne
 - **Consumer `.mcp.json` updated**: add `"X-Pane-Token": "${COORDINATOR_SESSION_TOKEN}"` to the coordinator server headers entry
 - **`peer-bus-session` SKILL.md simplified**: `register_session({ name })` — no token argument; recovery path simplified (no paneToken to re-supply)
 - **`start-team-session.sh` unchanged**: already generates and exports `COORDINATOR_SESSION_TOKEN` per pane via `openssl rand -base64 32`
+- **cmux consumer token path added**: cmux has no launcher, so a cmux pane sources its own stable per-pane `COORDINATOR_SESSION_TOKEN` via a generate-and-cache snippet (cached per `COORDINATOR_SESSION_NAME` under `${XDG_STATE_HOME:-$HOME/.local/state}/agentic-mcp-teaming/tokens/`) and supplies the same `X-Pane-Token` header. No coordinator code change — the header path is backend-agnostic; only consumer config + docs/skill guidance are added
 - **`coordinator-client-cli` withdrawn**: the only reason a CLI was needed was to pass paneToken without transcript leakage — header approach makes it unnecessary
 
 ## Capabilities
@@ -29,5 +30,6 @@ The `peer-bus-pane-token-auth` change correctly identified that pane identity ne
 - **`src/server/tools/peer-bus.ts`**: remove `paneToken` from `RegisterSessionParams` Zod schema; read from `ctx.paneToken` instead
 - **`src/core/session-registry.ts`**: no change — already accepts raw token value in `register()`
 - **Consumer repos**: `.mcp.json` gains `headers` block; SKILL.md `register_session` call drops `paneToken` arg
+- **cmux consumers**: pane startup profile gains a generate-and-cache token snippet; cmux `.mcp.json` gains the same `headers` block. Coordinator-repo `peer-bus-session` SKILL.md and `docs/peer-bus-runbook.md` document the cmux token setup and troubleshooting
 - **Tests**: update `register_session` tool tests to remove `paneToken` param; add connection-header extraction tests
 - **No breaking change to the wire protocol** — `register_session` becomes simpler for callers, not more complex
