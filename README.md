@@ -154,12 +154,26 @@ Edit `mcp-config.json` to configure the coordinator:
 
 ### 3. Connect Claude to the coordinator (optional)
 
-To let Claude call coordinator tools directly during its own turns, add the coordinator to Claude's MCP config (`~/.claude/mcp.json` or equivalent):
+To let Claude call coordinator tools directly during its own turns, add the coordinator to Claude's MCP config (`~/.claude/mcp.json` or equivalent). The coordinator serves both MCP transports (see [Transports](#transports)); pick the one your client speaks:
 
 ```json
 {
   "mcpServers": {
     "coordinator": {
+      "type": "http",
+      "url": "http://localhost:3100/mcp"
+    }
+  }
+}
+```
+
+For a legacy `type: "sse"` client (e.g. the VS Code extension), point at `/sse` instead:
+
+```json
+{
+  "mcpServers": {
+    "coordinator": {
+      "type": "sse",
       "url": "http://localhost:3100/sse"
     }
   }
@@ -287,9 +301,22 @@ After that:
 coordinator serve --config mcp-config.json --sessions-dir ./sessions
 ```
 
-The coordinator listens on `http://<host>:<port>/sse` and stays up until you send `SIGINT` / `SIGTERM`. Clean shutdown releases `coordinator.lock` and closes the HTTP socket.
+The coordinator listens on `http://<host>:<port>` and stays up until you send `SIGINT` / `SIGTERM`. Clean shutdown releases `coordinator.lock` and closes the HTTP socket.
 
 `serve` does NOT validate agent CLIs at startup — it doesn't run workflows, so missing agent CLIs are not a problem.
+
+### Transports
+
+The coordinator serves **both** MCP transports concurrently on the same port — pick by URL path in your client's `.mcp.json`:
+
+| Transport | Path | MCP spec | Client `type` | Used by |
+|---|---|---|---|---|
+| Streamable HTTP | `/mcp` | `2025-03-26` | `"http"` | Claude Code `type: "http"`, modern SDK/CLI clients |
+| Legacy HTTP+SSE | `/sse` + `/message` | `2024-11-05` | `"sse"` | VS Code extension, any `type: "sse"` client |
+
+Both transports expose the identical tool surface and share the same session registry and peer bus — a message sent over one transport is readable over the other. The same `Authorization: Bearer <token>` auth gate (and `X-Pane-Token` pane credential) applies to both. New clients should prefer `/mcp`; `/sse` remains supported for existing clients with no migration required.
+
+Requests to MCP OAuth-discovery paths the coordinator does not implement (`/register`, `/authorize`, `/token`, `/.well-known/oauth-*`) return a parseable JSON `404` (`{"error":"not_found","error_description":"oauth_not_supported"}`) rather than HTML, so client SDKs degrade cleanly instead of crashing when no OAuth is configured.
 
 ### Keeping it running
 

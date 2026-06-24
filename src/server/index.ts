@@ -1,5 +1,8 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
+import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
+import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import express, { type Request } from "express";
 import { z } from "zod";
 import { randomUUID, createHash, timingSafeEqual } from "crypto";
@@ -397,6 +400,10 @@ export async function startHttpServer(
   const app = express();
   const transports = new Map<string, SSEServerTransport>();
   const connectionServers = new Map<string, McpServer>();
+  // Streamable HTTP transport (MCP spec 2025-03-26) — independent session maps,
+  // never cross-looked-up with the SSE maps above.
+  const streamableTransports = new Map<string, StreamableHTTPServerTransport>();
+  const streamableServers = new Map<string, McpServer>();
 
   app.get("/sse", (req, res) => {
     if (!isAuthorizedRequest(req, authToken)) {
@@ -438,8 +445,82 @@ export async function startHttpServer(
     transport.handlePostMessage(req, res, req.body).catch(console.error);
   });
 
+  // --- Streamable HTTP transport: POST/GET/DELETE /mcp ---
+  app.all("/mcp", express.json({ limit: "1mb" }), async (req, res) => {
+    if (!isAuthorizedRequest(req, authToken)) {
+      res.status(401).send("Unauthorized");
+      return;
+    }
+
+    const sessionId = req.header("mcp-session-id");
+
+    if (sessionId !== undefined && streamableTransports.has(sessionId)) {
+      await streamableTransports.get(sessionId)!.handleRequest(req, res, req.body);
+      return;
+    }
+
+    if (sessionId === undefined && req.method === "POST" && isInitializeRequest(req.body)) {
+      // Same pane-token extraction as /sse — keeps Streamable HTTP consumers on
+      // the X-Pane-Token auth path threaded through the per-connection factory.
+      const raw = req.header("x-pane-token");
+      const trimmed = raw?.trim();
+      const byteLen = trimmed ? Buffer.byteLength(trimmed, "utf8") : 0;
+      const paneToken = byteLen >= 32 && byteLen <= 512 ? trimmed : undefined;
+
+      const server = serverFactory(paneToken);
+      const transport = new StreamableHTTPServerTransport({
+        sessionIdGenerator: () => randomUUID(),
+        onsessioninitialized: (sid) => {
+          streamableTransports.set(sid, transport);
+          streamableServers.set(sid, server);
+        },
+      });
+      transport.onclose = () => {
+        const sid = transport.sessionId;
+        if (sid !== undefined) {
+          streamableTransports.delete(sid);
+          streamableServers.delete(sid);
+          server.close().catch((err: unknown) => {
+            console.error("error closing per-connection MCP server:", err);
+          });
+        }
+      };
+      // StreamableHTTPServerTransport `implements Transport`; the cast only
+      // bridges an SDK typing quirk (its onclose getter is `(() => void) | undefined`,
+      // which trips this project's exactOptionalPropertyTypes).
+      await server.connect(transport as Transport);
+      await transport.handleRequest(req, res, req.body);
+      return;
+    }
+
+    // Session id absent-or-unknown and not an initialize request.
+    res.status(404).send("Session not found");
+  });
+
+  // --- JSON 404 catch-all for MCP-client OAuth-discovery probes ---
+  // Without this, a mis-pathed Streamable HTTP client falls back to OAuth DCR,
+  // hits Express's default HTML 404, and crashes parsing it as OAuth error JSON.
+  // Scoped to the exact OAuth-discovery paths; all other 404s stay Express default.
+  const OAUTH_DISCOVERY_PATHS = new Set([
+    "/register",
+    "/authorize",
+    "/token",
+    "/.well-known/oauth-authorization-server",
+    "/.well-known/oauth-protected-resource",
+  ]);
+  app.use((req, res, next) => {
+    if (OAUTH_DISCOVERY_PATHS.has(req.path)) {
+      // Raw writeHead/end bypasses Express's automatic `; charset=utf-8`
+      // injection so the header is exactly `application/json` per spec.
+      res.writeHead(404, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "not_found", error_description: "oauth_not_supported" }));
+      return;
+    }
+    next();
+  });
+
   const httpServer = app.listen(port, host, () => {
-    console.log(`Coordinator MCP server listening on http://${host}:${port}/sse`);
+    console.log(`Coordinator MCP server listening on http://${host}:${port}/sse (legacy) and /mcp (Streamable HTTP)`);
   });
 
   return () => httpServer.close();
