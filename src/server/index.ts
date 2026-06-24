@@ -3,7 +3,7 @@ import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
-import express, { type Request } from "express";
+import express, { type Request, type Response } from "express";
 import { z } from "zod";
 import { randomUUID, createHash, timingSafeEqual } from "crypto";
 import { McpConfig } from "../config.js";
@@ -446,16 +446,17 @@ export async function startHttpServer(
   });
 
   // --- Streamable HTTP transport: POST/GET/DELETE /mcp ---
-  app.all("/mcp", express.json({ limit: "1mb" }), async (req, res) => {
+  const handleStreamableRequest = async (req: Request, res: Response): Promise<void> => {
     if (!isAuthorizedRequest(req, authToken)) {
       res.status(401).send("Unauthorized");
       return;
     }
 
     const sessionId = req.header("mcp-session-id");
+    const existing = sessionId !== undefined ? streamableTransports.get(sessionId) : undefined;
 
-    if (sessionId !== undefined && streamableTransports.has(sessionId)) {
-      await streamableTransports.get(sessionId)!.handleRequest(req, res, req.body);
+    if (existing !== undefined) {
+      await existing.handleRequest(req, res, req.body);
       return;
     }
 
@@ -495,6 +496,12 @@ export async function startHttpServer(
 
     // Session id absent-or-unknown and not an initialize request.
     res.status(404).send("Session not found");
+  };
+
+  app.all("/mcp", express.json({ limit: "1mb" }), (req, res) => {
+    handleStreamableRequest(req, res).catch((err: unknown) => {
+      console.error("error handling /mcp request:", err);
+    });
   });
 
   // --- JSON 404 catch-all for MCP-client OAuth-discovery probes ---
