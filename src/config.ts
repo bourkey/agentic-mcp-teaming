@@ -106,12 +106,59 @@ const PeerBus = z.object({
   session: PeerBusSession.optional(),
 }).strict();
 
+const TlsHsts = z
+  .object({
+    enabled: z.boolean().default(true),
+    maxAge: z.number().int().nonnegative().default(31536000),
+    includeSubDomains: z.boolean().default(false),
+    preload: z.boolean().default(false),
+  })
+  .strict()
+  .superRefine((h, ctx) => {
+    if (h.preload && (!h.includeSubDomains || h.maxAge < 31536000)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["preload"],
+        message: "tls.hsts.preload requires includeSubDomains=true and maxAge >= 31536000",
+      });
+    }
+  });
+
+// Server-side TLS. Note: there is intentionally NO option to disable certificate
+// verification (no insecure/skip-verify flag) — clients must trust the server CA.
+const Tls = z
+  .object({
+    certFile: z.string(),
+    keyFile: z.string(),
+    caFile: z.string().optional(),
+    requireClientCert: z.boolean().optional(),
+    hsts: TlsHsts.default({}),
+  })
+  .strict()
+  .superRefine((t, ctx) => {
+    if (t.requireClientCert === true && t.caFile === undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["caFile"],
+        message: "tls.caFile is required when tls.requireClientCert is true",
+      });
+    }
+  });
+
+export type TlsConfig = z.infer<typeof Tls>;
+
 const McpConfig = z.object({
   port: z.number().int().positive().default(3100),
   host: z.string().default("127.0.0.1"),
   rootDir: z.string().default("."),
   toolAllowlist: z.array(z.string()),
   authTokenEnvVar: z.string().optional(),
+  tls: Tls.optional(),
+  allowInsecureNonLoopback: z.boolean().optional(),
+  // Operator-provided DNS-rebinding allowlist (the hostnames clients send in the
+  // Host header). Not auto-derived from `host` — the bind address is not the
+  // client-visible hostname. Empty/absent ⇒ DNS-rebinding protection stays off.
+  allowedHosts: z.array(z.string()).optional(),
   agents: z.record(z.string(), AgentEntry).default({}),
   reviewers: z.record(z.string(), ReviewerEntry).default({}),
   consensus: z.object({

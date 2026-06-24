@@ -277,6 +277,44 @@ NOT by itself prove Claude Code expanded `${COORDINATOR_AUTH_TOKEN}` or
 end-to-end signal for that is the `peer-bus-session` skill emitting
 `Inbox: N new messages` after a pane restart with both tokens exported.
 
+## 3a. TLS and cross-machine deployment
+
+The coordinator defaults to plain HTTP on `127.0.0.1`. To host it and connect
+agents from other machines, enable TLS — otherwise the auth token,
+`X-Pane-Token`, and message bodies cross the network in cleartext. Binding a
+non-loopback `host` over plain HTTP is **refused at startup** for this reason.
+
+**1. Provision certificates.** Server cert + key (and, for mutual TLS, a CA plus
+one client cert per agent machine). Protect the private key:
+
+```bash
+chmod 600 /etc/coordinator/tls/server.key
+```
+
+**2. Configure `mcp-config.json`** (see the README "TLS and cross-machine
+deployment" example): set `host`, the `tls` block (`certFile`/`keyFile`,
+optional `caFile` + `requireClientCert`, optional `hsts`), and `allowedHosts`
+(the exact `Host` values clients send — `/mcp` rejects others with `403`).
+Restart the coordinator; cert rotation is a restart (certs are read at startup).
+
+**3. Point agents at `https://`** in their `.mcp.json`, and make each client
+**trust the server CA** — `export NODE_EXTRA_CA_CERTS=/path/ca.crt` for Node-based
+MCP clients, or install the CA in the system trust store. Do **not** disable
+certificate verification; there is no insecure flag, by design. For mutual TLS,
+install the per-machine client cert where the client reads it.
+
+**HSTS on a `.dev` domain.** The whole `.dev` TLD is HSTS-preloaded, so browsers
+force HTTPS for any `*.dev` regardless. The coordinator's `Strict-Transport-Security`
+header (default on with TLS) formalises that; `includeSubDomains`/`preload` stay
+off unless you opt in — turning them on asserts a subtree/preload-list policy
+across sibling subdomains, which is slow to reverse.
+
+**Reverse-proxy alternative.** If you prefer ACME-managed certs, run Caddy/nginx
+terminating TLS in front of the loopback coordinator (`proxy_pass`/`reverse_proxy`
+to `127.0.0.1:3100`) and keep the coordinator on plain HTTP loopback. Set
+`allowInsecureNonLoopback` only if the coordinator itself must bind a non-loopback
+interface behind the proxy on a trusted network.
+
 ## 4. Toggle the coordinator's tmux notifier
 
 Default recommendation in `CLAUDE.md` is to leave this **disabled** — the

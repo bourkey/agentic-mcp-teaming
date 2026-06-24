@@ -6,6 +6,8 @@ import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import express, { type Request, type Response } from "express";
 import { z } from "zod";
 import { randomUUID, createHash, timingSafeEqual } from "crypto";
+import * as http from "node:http";
+import * as https from "node:https";
 import { McpConfig } from "../config.js";
 import { SharedToolsContext, readFileTool, writeFileTool, grepTool, globTool, bashTool } from "./tools/shared.js";
 import { AgentToolsContext, invokeAgentTool, makeMockAgentTool, invokeReviewerTool } from "./tools/agents.js";
@@ -73,6 +75,34 @@ export function isAuthorizedRequest(req: Pick<Request, "header" | "query">, expe
   const a = createHash("sha256").update(presented).digest();
   const b = createHash("sha256").update(expectedToken).digest();
   return timingSafeEqual(a, b);
+}
+
+/**
+ * True for hosts that never leave the machine — plain HTTP on these is safe.
+ * A configured hostname that is not a loopback literal is treated as
+ * non-loopback (it may resolve off-box), so it requires TLS or an explicit
+ * opt-out. Conservative by design: we do not resolve hostnames at startup.
+ */
+export function isLoopbackHost(host: string): boolean {
+  const h = host.trim().toLowerCase();
+  return (
+    h === "localhost" ||
+    h === "::1" ||
+    h === "0:0:0:0:0:0:0:1" ||
+    h === "[::1]" ||
+    /^127\./.test(h)
+  );
+}
+
+export interface HttpServerSecurityOptions {
+  /** Resolved TLS material (file contents read by the caller). When set, the server listens over HTTPS. */
+  tls?: { cert: Buffer; key: Buffer; ca?: Buffer; requireClientCert?: boolean };
+  /** Permit a non-loopback plaintext bind. Only honoured when `tls` is absent. */
+  allowInsecureNonLoopback?: boolean;
+  /** Resolved HSTS directives. Presence ⇒ emit the header (only over HTTPS). */
+  hsts?: { maxAge: number; includeSubDomains: boolean; preload: boolean };
+  /** DNS-rebinding allowlist applied to the Streamable HTTP transport. */
+  dnsRebinding?: { allowedHosts: string[]; allowedOrigins?: string[] };
 }
 
 export function createCoordinatorServer(opts: CoordinatorServerOptions): McpServer {
@@ -395,9 +425,38 @@ export async function startHttpServer(
   serverFactory: (paneToken?: string) => McpServer,
   port: number,
   host = "127.0.0.1",
-  authToken?: string
+  authToken?: string,
+  security: HttpServerSecurityOptions = {}
 ): Promise<() => void> {
+  const tls = security.tls;
+  const tlsActive = tls !== undefined;
+
+  // Bind hardening: never leak plaintext onto the network by accident.
+  if (!tlsActive && !isLoopbackHost(host)) {
+    if (security.allowInsecureNonLoopback !== true) {
+      throw new Error(
+        `Refusing to bind non-loopback host '${host}' over plain HTTP: this would expose the auth token, X-Pane-Token, and all peer-bus message bodies in cleartext. Configure 'tls' or set 'allowInsecureNonLoopback: true' to override.`,
+      );
+    }
+    console.warn(
+      `WARNING: coordinator bound to non-loopback host '${host}' over plain HTTP — traffic is UNENCRYPTED (allowInsecureNonLoopback is set).`,
+    );
+  }
+
   const app = express();
+
+  // HSTS — only over the HTTPS listener; emitting it over plain HTTP is a no-op
+  // per RFC 6797 and would only mislead. Header string is built once.
+  if (tlsActive && security.hsts !== undefined) {
+    const h = security.hsts;
+    let value = `max-age=${h.maxAge}`;
+    if (h.includeSubDomains) value += "; includeSubDomains";
+    if (h.preload) value += "; preload";
+    app.use((_req, res, next) => {
+      res.setHeader("Strict-Transport-Security", value);
+      next();
+    });
+  }
   const transports = new Map<string, SSEServerTransport>();
   const connectionServers = new Map<string, McpServer>();
   // Streamable HTTP transport (MCP spec 2025-03-26) — independent session maps,
@@ -471,6 +530,15 @@ export async function startHttpServer(
       const server = serverFactory(paneToken);
       const transport = new StreamableHTTPServerTransport({
         sessionIdGenerator: () => randomUUID(),
+        ...(security.dnsRebinding !== undefined
+          ? {
+              enableDnsRebindingProtection: true,
+              allowedHosts: security.dnsRebinding.allowedHosts,
+              ...(security.dnsRebinding.allowedOrigins !== undefined
+                ? { allowedOrigins: security.dnsRebinding.allowedOrigins }
+                : {}),
+            }
+          : {}),
         onsessioninitialized: (sid) => {
           streamableTransports.set(sid, transport);
           streamableServers.set(sid, server);
@@ -526,9 +594,29 @@ export async function startHttpServer(
     next();
   });
 
-  const httpServer = app.listen(port, host, () => {
-    console.log(`Coordinator MCP server listening on http://${host}:${port}/sse (legacy) and /mcp (Streamable HTTP)`);
-  });
+  const onListen = (): void => {
+    const scheme = tlsActive ? "https" : "http";
+    const mtls = tls?.requireClientCert === true ? " (mutual TLS)" : "";
+    console.log(
+      `Coordinator MCP server listening on ${scheme}://${host}:${port}/sse (legacy) and /mcp (Streamable HTTP)${mtls}`,
+    );
+  };
 
-  return () => httpServer.close();
+  const server: http.Server | https.Server =
+    tls !== undefined
+      ? https.createServer(
+          {
+            cert: tls.cert,
+            key: tls.key,
+            ...(tls.ca !== undefined ? { ca: tls.ca } : {}),
+            ...(tls.requireClientCert === true ? { requestCert: true, rejectUnauthorized: true } : {}),
+          },
+          app,
+        )
+      : http.createServer(app);
+  server.listen(port, host, onListen);
+
+  return () => {
+    server.close();
+  };
 }

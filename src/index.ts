@@ -3,8 +3,9 @@ import { Command } from "commander";
 import { execFile } from "child_process";
 import { promisify } from "util";
 import { access, readdir, stat } from "fs/promises";
+import { readFileSync } from "node:fs";
 import { resolve } from "path";
-import { loadConfig } from "./config.js";
+import { loadConfig, type McpConfig } from "./config.js";
 import { SessionManager } from "./core/session.js";
 import { AuditLogger } from "./core/audit.js";
 import { SnapshotStore } from "./core/snapshot.js";
@@ -15,7 +16,7 @@ import { SpawnTracker } from "./core/spawn-tracker.js";
 import { consoleLogger } from "./core/logger.js";
 import { bootstrapPeerBus } from "./core/peer-bus-bootstrap.js";
 import { AgentToolsContext } from "./server/tools/agents.js";
-import { createCoordinatorServer, startHttpServer, type PeerBusWiring } from "./server/index.js";
+import { createCoordinatorServer, startHttpServer, type PeerBusWiring, type HttpServerSecurityOptions } from "./server/index.js";
 import { runProposalPhase } from "./phases/proposal.js";
 import { runDesignPhase } from "./phases/design.js";
 import { runSpecsPhase } from "./phases/specs.js";
@@ -26,6 +27,45 @@ const execFileAsync = promisify(execFile);
 
 async function fileExists(path: string): Promise<boolean> {
   try { await access(path); return true; } catch { return false; }
+}
+
+/** Resolve TLS/bind-hardening/DNS-rebinding config into startHttpServer options. */
+function buildHttpSecurity(config: McpConfig): HttpServerSecurityOptions {
+  const security: HttpServerSecurityOptions = {};
+
+  if (config.tls !== undefined) {
+    const t = config.tls;
+    const readPem = (label: string, p: string): Buffer => {
+      try {
+        return readFileSync(p);
+      } catch (err) {
+        throw new Error(`TLS ${label} '${p}' is not readable: ${String(err)}`);
+      }
+    };
+    security.tls = {
+      cert: readPem("certFile", t.certFile),
+      key: readPem("keyFile", t.keyFile),
+      ...(t.caFile !== undefined ? { ca: readPem("caFile", t.caFile) } : {}),
+      ...(t.requireClientCert !== undefined ? { requireClientCert: t.requireClientCert } : {}),
+    };
+    if (t.hsts.enabled) {
+      security.hsts = {
+        maxAge: t.hsts.maxAge,
+        includeSubDomains: t.hsts.includeSubDomains,
+        preload: t.hsts.preload,
+      };
+    }
+  }
+
+  if (config.allowInsecureNonLoopback !== undefined) {
+    security.allowInsecureNonLoopback = config.allowInsecureNonLoopback;
+  }
+
+  if (config.allowedHosts !== undefined && config.allowedHosts.length > 0) {
+    security.dnsRebinding = { allowedHosts: config.allowedHosts };
+  }
+
+  return security;
 }
 
 async function findMostRecentSession(sessionsDir: string): Promise<string | undefined> {
@@ -188,7 +228,8 @@ async function main(): Promise<void> {
         makeServer,
         config.port,
         config.host,
-        config.authTokenEnvVar ? process.env[config.authTokenEnvVar] : undefined
+        config.authTokenEnvVar ? process.env[config.authTokenEnvVar] : undefined,
+        buildHttpSecurity(config)
       );
 
       logger.log({ type: "session_start", sessionId, dryRun: !!opts.dryRun, startPhase: opts.workflow });
@@ -319,11 +360,12 @@ async function main(): Promise<void> {
         makeServer,
         config.port,
         config.host,
-        config.authTokenEnvVar ? process.env[config.authTokenEnvVar] : undefined
+        config.authTokenEnvVar ? process.env[config.authTokenEnvVar] : undefined,
+        buildHttpSecurity(config)
       );
 
       logger.log({ type: "serve_started", sessionId, port: config.port, host: config.host });
-      console.log(`Coordinator serve mode running on http://${config.host}:${config.port}/sse (session ${sessionId})`);
+      console.log(`Coordinator serve mode running on ${config.tls !== undefined ? "https" : "http"}://${config.host}:${config.port}/sse (session ${sessionId})`);
       console.log("Press Ctrl+C to stop.");
 
       // Block until SIGINT/SIGTERM. The bootstrap already registered lock-cleanup
