@@ -104,6 +104,30 @@ describe("Streamable HTTP transport (/mcp)", () => {
     }
   }, 30000);
 
+  it("GET /mcp opens an SSE stream for a valid session; 404 for an unknown one", async () => {
+    coord = await startCoordinator();
+    const base = `http://127.0.0.1:${coord.port}/mcp`;
+    const initHeaders = { "Content-Type": "application/json", Accept: "application/json, text/event-stream" };
+
+    const init = await fetch(base, {
+      method: "POST",
+      headers: initHeaders,
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-03-26", capabilities: {}, clientInfo: { name: "raw", version: "0.0.0" } } }),
+    });
+    const sid = init.headers.get("mcp-session-id");
+    expect(sid).toBeTruthy();
+    await init.body?.cancel();
+
+    const stream = await fetch(base, { method: "GET", headers: { Accept: "text/event-stream", "Mcp-Session-Id": sid! } });
+    expect(stream.status).toBe(200);
+    expect(stream.headers.get("content-type") ?? "").toContain("text/event-stream");
+    await stream.body?.cancel();
+
+    const bogus = await fetch(base, { method: "GET", headers: { Accept: "text/event-stream", "Mcp-Session-Id": "00000000-0000-0000-0000-000000000000" } });
+    expect(bogus.status).toBe(404);
+    await bogus.body?.cancel();
+  }, 30000);
+
   it("auth: request without bearer is 401; correct bearer succeeds", async () => {
     coord = await startCoordinator({
       config: { authTokenEnvVar: "COORDINATOR_AUTH_TOKEN" },

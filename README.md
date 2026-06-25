@@ -338,7 +338,7 @@ By default the coordinator listens over **plain HTTP on `127.0.0.1`** — fine f
 }
 ```
 
-- **Native TLS** — when `tls` is set the server listens over `https`. Clients point at `https://<host>:<port>/mcp` (or `/sse`) and **must trust the server's CA** (`NODE_EXTRA_CA_CERTS=/path/ca.crt` for Node-based MCP clients, or the system trust store).
+- **Native TLS** — when `tls` is set the server listens over `https`. Clients point at `https://<host>:<port>/mcp` (or `/sse`) and **must trust the server's CA** (`NODE_EXTRA_CA_CERTS=/path/ca.crt` for Node-based MCP clients, or the system trust store). `certFile` must be the server's **full chain** (leaf + any intermediates); `caFile` is only for verifying *client* certs under mTLS. The cert's validity window is logged at startup (with a warning inside 14 days of expiry); rotation is a coordinator restart.
 - **Mutual TLS** — `requireClientCert: true` (needs `caFile`) makes each agent machine present a CA-signed client cert; connections without one are rejected at the TLS layer, on top of the token auth.
 - **Bind hardening** — binding a **non-loopback** `host` over plain HTTP (no `tls`) is **refused at startup** to prevent accidental cleartext exposure. Override only for a trusted private network or a TLS-terminating proxy with `"allowInsecureNonLoopback": true`.
 - **HSTS** — when TLS is active the server emits `Strict-Transport-Security` on every HTTPS response (default `max-age=31536000`; `includeSubDomains`/`preload` off by default). Especially relevant on a `.dev` domain — the entire `.dev` TLD is on the browser HSTS-preload list, so browsers already force HTTPS. (MCP SDK clients are CLI and don't honour HSTS; it's hygiene for any browser-adjacent access.)

@@ -48,6 +48,14 @@ describe("OAuth-discovery JSON 404 catch-all", () => {
     }
   }, 30000);
 
+  it("matches an OAuth path with a trailing slash", async () => {
+    coord = await startCoordinator();
+    const res = await fetch(`http://127.0.0.1:${coord.port}/register/`, { method: "POST" });
+    expect(res.status).toBe(404);
+    expect(res.headers.get("content-type")).toBe("application/json");
+    expect(await res.text()).toBe('{"error":"not_found","error_description":"oauth_not_supported"}');
+  }, 30000);
+
   it("non-OAuth 404 is unchanged (Express default HTML, not the JSON catch-all)", async () => {
     coord = await startCoordinator();
     const res = await fetch(`http://127.0.0.1:${coord.port}/does-not-exist`, { method: "POST" });

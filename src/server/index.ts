@@ -94,6 +94,26 @@ export function isLoopbackHost(host: string): boolean {
   );
 }
 
+/**
+ * The SSE URL spawned sub-agents call back on. Scheme follows TLS config so a
+ * sub-agent under an HTTPS coordinator is told `https://` (not a dead `http://`).
+ * Single source of truth for every coordinatorUrl construction site.
+ */
+export function coordinatorSseUrl(config: Pick<McpConfig, "host" | "port" | "tls">): string {
+  const scheme = config.tls !== undefined ? "https" : "http";
+  return `${scheme}://${config.host}:${config.port}/sse`;
+}
+
+const PANE_TOKEN_MIN_BYTES = 32;
+const PANE_TOKEN_MAX_BYTES = 512;
+
+/** Extract + length-validate the X-Pane-Token header. Shared by /sse and /mcp. */
+export function extractPaneToken(req: Pick<Request, "header">): string | undefined {
+  const trimmed = req.header("x-pane-token")?.trim();
+  const byteLen = trimmed ? Buffer.byteLength(trimmed, "utf8") : 0;
+  return byteLen >= PANE_TOKEN_MIN_BYTES && byteLen <= PANE_TOKEN_MAX_BYTES ? trimmed : undefined;
+}
+
 export interface HttpServerSecurityOptions {
   /** Resolved TLS material (file contents read by the caller). When set, the server listens over HTTPS. */
   tls?: { cert: Buffer; key: Buffer; ca?: Buffer; requireClientCert?: boolean };
@@ -123,7 +143,7 @@ export function createCoordinatorServer(opts: CoordinatorServerOptions): McpServ
       sessionId: state.sessionId,
       phase: state.currentPhase,
       checkpoint,
-      coordinatorUrl: `http://${config.host}:${config.port}/sse`,
+      coordinatorUrl: coordinatorSseUrl(config),
       ...(getConfiguredAuthToken(config) ? { coordinatorAuthToken: getConfiguredAuthToken(config)! } : {}),
       persistSpawnStats: async (stats) => {
         await session.update({ spawnStats: stats });
@@ -464,16 +484,25 @@ export async function startHttpServer(
   const streamableTransports = new Map<string, StreamableHTTPServerTransport>();
   const streamableServers = new Map<string, McpServer>();
 
+  // DNS-rebinding allowlist, applied to BOTH transports when configured. Opt-in
+  // (undefined ⇒ off), so default deployments are unchanged.
+  const dnsRebindingOpts = security.dnsRebinding !== undefined
+    ? {
+        enableDnsRebindingProtection: true,
+        allowedHosts: security.dnsRebinding.allowedHosts,
+        ...(security.dnsRebinding.allowedOrigins !== undefined
+          ? { allowedOrigins: security.dnsRebinding.allowedOrigins }
+          : {}),
+      }
+    : undefined;
+
   app.get("/sse", (req, res) => {
     if (!isAuthorizedRequest(req, authToken)) {
-      res.status(401).send("Unauthorized");
+      res.status(401).json({ error: "unauthorized" });
       return;
     }
-    const raw = req.header("x-pane-token");
-    const trimmed = raw?.trim();
-    const byteLen = trimmed ? Buffer.byteLength(trimmed, "utf8") : 0;
-    const paneToken = byteLen >= 32 && byteLen <= 512 ? trimmed : undefined;
-    const transport = new SSEServerTransport("/message", res);
+    const paneToken = extractPaneToken(req);
+    const transport = new SSEServerTransport("/message", res, dnsRebindingOpts);
     const server = serverFactory(paneToken);
     transports.set(transport.sessionId, transport);
     connectionServers.set(transport.sessionId, server);
@@ -492,12 +521,12 @@ export async function startHttpServer(
 
   app.post("/message", express.json({ limit: "64kb" }), (req, res) => {
     if (!isAuthorizedRequest(req, authToken)) {
-      res.status(401).send("Unauthorized");
+      res.status(401).json({ error: "unauthorized" });
       return;
     }
     const sessionId = req.query["sessionId"] as string;
     const transport = transports.get(sessionId);
-    if (!transport) { res.status(404).send("Session not found"); return; }
+    if (!transport) { res.status(404).json({ error: "session_not_found" }); return; }
     // express.json has already consumed the request stream, so pass the
     // parsed body as the third argument — the SSE transport will use it
     // instead of re-reading the (now empty) stream.
@@ -507,7 +536,7 @@ export async function startHttpServer(
   // --- Streamable HTTP transport: POST/GET/DELETE /mcp ---
   const handleStreamableRequest = async (req: Request, res: Response): Promise<void> => {
     if (!isAuthorizedRequest(req, authToken)) {
-      res.status(401).send("Unauthorized");
+      res.status(401).json({ error: "unauthorized" });
       return;
     }
 
@@ -520,39 +549,29 @@ export async function startHttpServer(
     }
 
     if (sessionId === undefined && req.method === "POST" && isInitializeRequest(req.body)) {
-      // Same pane-token extraction as /sse — keeps Streamable HTTP consumers on
-      // the X-Pane-Token auth path threaded through the per-connection factory.
-      const raw = req.header("x-pane-token");
-      const trimmed = raw?.trim();
-      const byteLen = trimmed ? Buffer.byteLength(trimmed, "utf8") : 0;
-      const paneToken = byteLen >= 32 && byteLen <= 512 ? trimmed : undefined;
+      const paneToken = extractPaneToken(req);
 
       const server = serverFactory(paneToken);
       const transport = new StreamableHTTPServerTransport({
         sessionIdGenerator: () => randomUUID(),
-        ...(security.dnsRebinding !== undefined
-          ? {
-              enableDnsRebindingProtection: true,
-              allowedHosts: security.dnsRebinding.allowedHosts,
-              ...(security.dnsRebinding.allowedOrigins !== undefined
-                ? { allowedOrigins: security.dnsRebinding.allowedOrigins }
-                : {}),
-            }
-          : {}),
+        ...(dnsRebindingOpts ?? {}),
         onsessioninitialized: (sid) => {
           streamableTransports.set(sid, transport);
           streamableServers.set(sid, server);
         },
       });
+      // Always close the per-connection server on teardown — even if the session
+      // was never initialised (the map deletes are sessionId-guarded, the close
+      // is not), so a connected-but-uninitialised server cannot leak.
       transport.onclose = () => {
         const sid = transport.sessionId;
         if (sid !== undefined) {
           streamableTransports.delete(sid);
           streamableServers.delete(sid);
-          server.close().catch((err: unknown) => {
-            console.error("error closing per-connection MCP server:", err);
-          });
         }
+        server.close().catch((err: unknown) => {
+          console.error("error closing per-connection MCP server:", err);
+        });
       };
       // StreamableHTTPServerTransport `implements Transport`; the cast only
       // bridges an SDK typing quirk (its onclose getter is `(() => void) | undefined`,
@@ -563,7 +582,7 @@ export async function startHttpServer(
     }
 
     // Session id absent-or-unknown and not an initialize request.
-    res.status(404).send("Session not found");
+    res.status(404).json({ error: "session_not_found" });
   };
 
   app.all("/mcp", express.json({ limit: "1mb" }), (req, res) => {
@@ -584,7 +603,10 @@ export async function startHttpServer(
     "/.well-known/oauth-protected-resource",
   ]);
   app.use((req, res, next) => {
-    if (OAUTH_DISCOVERY_PATHS.has(req.path)) {
+    // Normalise a trailing slash so `/register/` matches `/register` — a
+    // proxy or client library may append one.
+    const path = req.path.length > 1 ? req.path.replace(/\/+$/, "") : req.path;
+    if (OAUTH_DISCOVERY_PATHS.has(path)) {
       // Raw writeHead/end bypasses Express's automatic `; charset=utf-8`
       // injection so the header is exactly `application/json` per spec.
       res.writeHead(404, { "Content-Type": "application/json" });

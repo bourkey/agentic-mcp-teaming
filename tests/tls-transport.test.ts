@@ -5,6 +5,7 @@ import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadConfig } from "../src/config.js";
+import { coordinatorSseUrl } from "../src/server/index.js";
 import { startCoordinator, stopCoordinator, type Coordinator } from "./serve-harness.js";
 import { generateTlsFixtures, type TlsFixtures } from "./tls-fixtures.js";
 
@@ -62,6 +63,19 @@ describe("coordinator TLS transport", () => {
     }, INIT_BODY);
     expect(res.status).toBe(200);
     expect(res.headers["mcp-session-id"]).toBeDefined();
+    // HSTS covers the client-facing transports, not just /register (T7).
+    expect(res.headers["strict-transport-security"]).toBe("max-age=31536000");
+  }, 30000);
+
+  it("emits HSTS on the /sse stream response under TLS", async () => {
+    coord = await startCoordinator({
+      config: { tls: { certFile: tls.serverCertPath, keyFile: tls.serverKeyPath } },
+    });
+    const res = await request(https, {
+      host: "127.0.0.1", port: coord.port, path: "/sse", method: "GET", ca: tls.caCert,
+    });
+    expect(res.status).toBe(200);
+    expect(res.headers["strict-transport-security"]).toBe("max-age=31536000");
   }, 30000);
 
   it("suppresses HSTS when tls.hsts.enabled is false", async () => {
@@ -117,6 +131,12 @@ describe("coordinator TLS transport", () => {
     expect(allowed.status).toBe(200);
     expect(allowed.headers["mcp-session-id"]).toBeDefined();
   }, 30000);
+
+  it("coordinatorSseUrl scheme follows TLS config (sub-agent callback URL)", () => {
+    const base = { host: "10.0.0.5", port: 3100 } as const;
+    expect(coordinatorSseUrl({ ...base })).toBe("http://10.0.0.5:3100/sse");
+    expect(coordinatorSseUrl({ ...base, tls: { certFile: "c", keyFile: "k", hsts: { enabled: true, maxAge: 1, includeSubDomains: false, preload: false } } })).toBe("https://10.0.0.5:3100/sse");
+  });
 
   it("config validation rejects requireClientCert without caFile", () => {
     const dir = mkdtempSync(join(tmpdir(), "tls-cfg-"));

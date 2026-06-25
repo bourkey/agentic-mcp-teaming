@@ -4,6 +4,7 @@ import { execFile } from "child_process";
 import { promisify } from "util";
 import { access, readdir, stat } from "fs/promises";
 import { readFileSync } from "node:fs";
+import { X509Certificate } from "node:crypto";
 import { resolve } from "path";
 import { loadConfig, type McpConfig } from "./config.js";
 import { SessionManager } from "./core/session.js";
@@ -16,7 +17,7 @@ import { SpawnTracker } from "./core/spawn-tracker.js";
 import { consoleLogger } from "./core/logger.js";
 import { bootstrapPeerBus } from "./core/peer-bus-bootstrap.js";
 import { AgentToolsContext } from "./server/tools/agents.js";
-import { createCoordinatorServer, startHttpServer, type PeerBusWiring, type HttpServerSecurityOptions } from "./server/index.js";
+import { createCoordinatorServer, startHttpServer, coordinatorSseUrl, type PeerBusWiring, type HttpServerSecurityOptions } from "./server/index.js";
 import { runProposalPhase } from "./phases/proposal.js";
 import { runDesignPhase } from "./phases/design.js";
 import { runSpecsPhase } from "./phases/specs.js";
@@ -48,6 +49,20 @@ function buildHttpSecurity(config: McpConfig): HttpServerSecurityOptions {
       ...(t.caFile !== undefined ? { ca: readPem("caFile", t.caFile) } : {}),
       ...(t.requireClientCert !== undefined ? { requireClientCert: t.requireClientCert } : {}),
     };
+    // Startup observability: certs are read once and held for the process
+    // lifetime (rotation = restart), so surface the validity window now rather
+    // than discovering expiry via opaque handshake failures later.
+    try {
+      const cert = new X509Certificate(security.tls.cert);
+      const daysLeft = Math.floor((new Date(cert.validTo).getTime() - Date.now()) / 86_400_000);
+      if (daysLeft < 0) {
+        console.warn(`WARNING: TLS certificate EXPIRED on ${cert.validTo} — new TLS handshakes will fail until it is replaced.`);
+      } else {
+        console.log(`${daysLeft <= 14 ? "WARNING: " : ""}TLS certificate valid until ${cert.validTo} (${daysLeft} day(s) left).`);
+      }
+    } catch (err) {
+      console.warn(`TLS certificate could not be parsed for expiry logging: ${String(err)}`);
+    }
     if (t.hsts.enabled) {
       security.hsts = {
         maxAge: t.hsts.maxAge,
@@ -182,7 +197,7 @@ async function main(): Promise<void> {
         sessionId,
         phase: session.get().currentPhase,
         checkpoint,
-        coordinatorUrl: `http://${config.host}:${config.port}/sse`,
+        coordinatorUrl: coordinatorSseUrl(config),
         ...(config.authTokenEnvVar && process.env[config.authTokenEnvVar]
           ? { coordinatorAuthToken: process.env[config.authTokenEnvVar]! }
           : {}),
@@ -324,7 +339,7 @@ async function main(): Promise<void> {
         sessionId,
         phase: session.get().currentPhase,
         checkpoint,
-        coordinatorUrl: `http://${config.host}:${config.port}/sse`,
+        coordinatorUrl: coordinatorSseUrl(config),
         ...(config.authTokenEnvVar && process.env[config.authTokenEnvVar]
           ? { coordinatorAuthToken: process.env[config.authTokenEnvVar]! }
           : {}),

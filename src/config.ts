@@ -128,6 +128,9 @@ const TlsHsts = z
 // verification (no insecure/skip-verify flag) — clients must trust the server CA.
 const Tls = z
   .object({
+    // certFile must be the server's FULL chain (leaf + any intermediates) — Node's
+    // `ca` option below is for verifying *client* certs (mTLS), not for sending the
+    // server's chain. A leaf signed directly by the trusted CA also works.
     certFile: z.string(),
     keyFile: z.string(),
     caFile: z.string().optional(),
