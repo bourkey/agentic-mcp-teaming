@@ -153,6 +153,10 @@ export type TlsConfig = z.infer<typeof Tls>;
 const McpConfig = z.object({
   port: z.number().int().positive().default(3100),
   host: z.string().default("127.0.0.1"),
+  // Host that spawned sub-agents use to call back (COORDINATOR_MCP_URL). Set this
+  // to a routable address when `host` is a wildcard (0.0.0.0/::), which is not a
+  // valid destination. Defaults to `host`.
+  advertisedHost: z.string().optional(),
   rootDir: z.string().default("."),
   toolAllowlist: z.array(z.string()),
   authTokenEnvVar: z.string().optional(),

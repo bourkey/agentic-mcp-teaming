@@ -99,9 +99,15 @@ export function isLoopbackHost(host: string): boolean {
  * sub-agent under an HTTPS coordinator is told `https://` (not a dead `http://`).
  * Single source of truth for every coordinatorUrl construction site.
  */
-export function coordinatorSseUrl(config: Pick<McpConfig, "host" | "port" | "tls">): string {
+export function coordinatorSseUrl(config: Pick<McpConfig, "host" | "port" | "tls" | "advertisedHost">): string {
   const scheme = config.tls !== undefined ? "https" : "http";
-  return `${scheme}://${config.host}:${config.port}/sse`;
+  // Sub-agents connect back on the advertised host if set; otherwise the bind
+  // host. A wildcard bind host (0.0.0.0/::) is not routable as a destination —
+  // operators serving sub-invocation across machines must set `advertisedHost`.
+  const rawHost = config.advertisedHost ?? config.host;
+  // Bracket IPv6 literals so the authority is a valid URL (`[::1]:3100`).
+  const host = rawHost.includes(":") && !rawHost.startsWith("[") ? `[${rawHost}]` : rawHost;
+  return `${scheme}://${host}:${config.port}/sse`;
 }
 
 const PANE_TOKEN_MIN_BYTES = 32;
@@ -121,8 +127,8 @@ export interface HttpServerSecurityOptions {
   allowInsecureNonLoopback?: boolean;
   /** Resolved HSTS directives. Presence ⇒ emit the header (only over HTTPS). */
   hsts?: { maxAge: number; includeSubDomains: boolean; preload: boolean };
-  /** DNS-rebinding allowlist applied to the Streamable HTTP transport. */
-  dnsRebinding?: { allowedHosts: string[]; allowedOrigins?: string[] };
+  /** DNS-rebinding Host allowlist, applied to both transports. */
+  dnsRebinding?: { allowedHosts: string[] };
 }
 
 export function createCoordinatorServer(opts: CoordinatorServerOptions): McpServer {
@@ -490,15 +496,25 @@ export async function startHttpServer(
     ? {
         enableDnsRebindingProtection: true,
         allowedHosts: security.dnsRebinding.allowedHosts,
-        ...(security.dnsRebinding.allowedOrigins !== undefined
-          ? { allowedOrigins: security.dnsRebinding.allowedOrigins }
-          : {}),
       }
     : undefined;
+
+  // The SDK's SSE transport only host-validates POST /message, NOT the GET stream
+  // open (start() has no req). Validate the GET /sse Host ourselves so the
+  // allowlist actually gates stream establishment too.
+  const hostAllowed = (req: Request): boolean => {
+    if (dnsRebindingOpts === undefined) return true;
+    const hostHeader = req.headers.host;
+    return hostHeader !== undefined && dnsRebindingOpts.allowedHosts.includes(hostHeader);
+  };
 
   app.get("/sse", (req, res) => {
     if (!isAuthorizedRequest(req, authToken)) {
       res.status(401).json({ error: "unauthorized" });
+      return;
+    }
+    if (!hostAllowed(req)) {
+      res.status(403).json({ error: "forbidden", reason: "invalid_host" });
       return;
     }
     const paneToken = extractPaneToken(req);
@@ -616,6 +632,23 @@ export async function startHttpServer(
     next();
   });
 
+  // JSON error handler for body-parser failures (malformed JSON / over-limit).
+  // Without this, Express returns HTML, which re-triggers the exact OAuth-style
+  // parse crash in MCP client SDKs that the catch-all above prevents.
+  app.use((err: unknown, _req: Request, res: Response, next: (e?: unknown) => void): void => {
+    const e = err as { type?: string; status?: number; statusCode?: number } | null;
+    const status = e?.status ?? e?.statusCode;
+    if (e?.type === "entity.too.large" || status === 413) {
+      res.status(413).json({ error: "payload_too_large" });
+      return;
+    }
+    if (e?.type === "entity.parse.failed" || err instanceof SyntaxError || status === 400) {
+      res.status(400).json({ error: "invalid_json" });
+      return;
+    }
+    next(err);
+  });
+
   const onListen = (): void => {
     const scheme = tlsActive ? "https" : "http";
     const mtls = tls?.requireClientCert === true ? " (mutual TLS)" : "";
@@ -636,9 +669,16 @@ export async function startHttpServer(
           app,
         )
       : http.createServer(app);
+  // Without an 'error' listener a bind failure (EADDRINUSE) or TLS setup error
+  // would surface as an uncaught exception that crashes the process.
+  server.on("error", (err: Error) => {
+    console.error("coordinator HTTP server error:", err);
+  });
   server.listen(port, host, onListen);
 
   return () => {
+    // Terminate any in-flight SSE / Streamable HTTP streams so close() can settle.
+    server.closeAllConnections();
     server.close();
   };
 }

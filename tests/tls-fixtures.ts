@@ -17,6 +17,9 @@ export interface TlsFixtures {
   caCert: Buffer;
   clientCert: Buffer;
   clientKey: Buffer;
+  /** Client cert signed by a DIFFERENT CA (not trusted by the server) — for mTLS reject tests. */
+  untrustedClientCert: Buffer;
+  untrustedClientKey: Buffer;
   cleanup: () => void;
 }
 
@@ -39,6 +42,11 @@ export function generateTlsFixtures(): TlsFixtures {
   ossl(["req", "-newkey", "rsa:2048", "-nodes", "-keyout", p("client.key"), "-out", p("client.csr"), "-subj", "/CN=test-client"]);
   ossl(["x509", "-req", "-in", p("client.csr"), "-CA", p("ca.crt"), "-CAkey", p("ca.key"), "-CAserial", p("ca.srl"), "-out", p("client.crt"), "-days", "2"]);
 
+  // A second, UNTRUSTED CA + client cert — the server's CA does not sign this.
+  ossl(["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", p("other-ca.key"), "-out", p("other-ca.crt"), "-days", "2", "-subj", "/CN=Other CA"]);
+  ossl(["req", "-newkey", "rsa:2048", "-nodes", "-keyout", p("rogue.key"), "-out", p("rogue.csr"), "-subj", "/CN=rogue-client"]);
+  ossl(["x509", "-req", "-in", p("rogue.csr"), "-CA", p("other-ca.crt"), "-CAkey", p("other-ca.key"), "-CAcreateserial", "-out", p("rogue.crt"), "-days", "2"]);
+
   return {
     dir,
     caCertPath: p("ca.crt"),
@@ -49,6 +57,8 @@ export function generateTlsFixtures(): TlsFixtures {
     caCert: readFileSync(p("ca.crt")),
     clientCert: readFileSync(p("client.crt")),
     clientKey: readFileSync(p("client.key")),
+    untrustedClientCert: readFileSync(p("rogue.crt")),
+    untrustedClientKey: readFileSync(p("rogue.key")),
     cleanup: () => rmSync(dir, { recursive: true, force: true }),
   };
 }

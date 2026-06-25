@@ -128,6 +128,19 @@ describe("Streamable HTTP transport (/mcp)", () => {
     await bogus.body?.cancel();
   }, 30000);
 
+  it("malformed JSON to /mcp returns a JSON 400, not HTML (no SDK parse crash)", async () => {
+    coord = await startCoordinator();
+    const res = await fetch(`http://127.0.0.1:${coord.port}/mcp`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "application/json, text/event-stream" },
+      body: "{not valid json",
+    });
+    expect(res.status).toBe(400);
+    expect(res.headers.get("content-type") ?? "").toContain("application/json");
+    const parsed = JSON.parse(await res.text()) as { error: string };
+    expect(parsed.error).toBe("invalid_json");
+  }, 30000);
+
   it("auth: request without bearer is 401; correct bearer succeeds", async () => {
     coord = await startCoordinator({
       config: { authTokenEnvVar: "COORDINATOR_AUTH_TOKEN" },

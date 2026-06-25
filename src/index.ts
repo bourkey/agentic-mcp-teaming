@@ -17,7 +17,7 @@ import { SpawnTracker } from "./core/spawn-tracker.js";
 import { consoleLogger } from "./core/logger.js";
 import { bootstrapPeerBus } from "./core/peer-bus-bootstrap.js";
 import { AgentToolsContext } from "./server/tools/agents.js";
-import { createCoordinatorServer, startHttpServer, coordinatorSseUrl, type PeerBusWiring, type HttpServerSecurityOptions } from "./server/index.js";
+import { createCoordinatorServer, startHttpServer, coordinatorSseUrl, isLoopbackHost, type PeerBusWiring, type HttpServerSecurityOptions } from "./server/index.js";
 import { runProposalPhase } from "./phases/proposal.js";
 import { runDesignPhase } from "./phases/design.js";
 import { runSpecsPhase } from "./phases/specs.js";
@@ -77,7 +77,13 @@ function buildHttpSecurity(config: McpConfig): HttpServerSecurityOptions {
   }
 
   if (config.allowedHosts !== undefined && config.allowedHosts.length > 0) {
-    security.dnsRebinding = { allowedHosts: config.allowedHosts };
+    // The SDK matches the full Host header exactly (incl. port). Clients send
+    // `host:port` for non-default ports, so expand each bare host to also accept
+    // the `host:port` form — otherwise a legitimate client gets a 403.
+    const expanded = config.allowedHosts.flatMap((h) =>
+      h.includes(":") ? [h] : [h, `${h}:${String(config.port)}`],
+    );
+    security.dnsRebinding = { allowedHosts: expanded };
   }
 
   return security;
@@ -123,10 +129,6 @@ async function validateGit(repoRoot: string): Promise<string> {
   }
   const { stdout: branch } = await execFileAsync("git", ["rev-parse", "--abbrev-ref", "HEAD"], { cwd: repoRoot });
   return branch.trim();
-}
-
-function isLoopbackHost(host: string): boolean {
-  return host === "127.0.0.1" || host === "localhost" || host === "::1";
 }
 
 function requiresGitForWorkflow(phase: string): boolean {

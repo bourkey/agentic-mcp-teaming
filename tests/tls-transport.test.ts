@@ -119,6 +119,18 @@ describe("coordinator TLS transport", () => {
     ).rejects.toThrow();
   }, 30000);
 
+  it("mutual TLS rejects a client cert signed by an untrusted CA (the real boundary)", async () => {
+    coord = await startCoordinator({
+      config: { tls: { certFile: tls.serverCertPath, keyFile: tls.serverKeyPath, caFile: tls.caCertPath, requireClientCert: true } },
+    });
+    await expect(
+      request(https, {
+        host: "127.0.0.1", port: coord.port, path: "/register", method: "POST",
+        ca: tls.caCert, cert: tls.untrustedClientCert, key: tls.untrustedClientKey,
+      }),
+    ).rejects.toThrow();
+  }, 30000);
+
   it("DNS-rebinding: rejects a disallowed Host, admits an allowlisted Host", async () => {
     coord = await startCoordinator({ config: { allowedHosts: ["allowed.test"] } });
     const base = { host: "127.0.0.1", port: coord.port, path: "/mcp", method: "POST" as const };
@@ -130,12 +142,45 @@ describe("coordinator TLS transport", () => {
     const allowed = await request(http, { ...base, headers: { ...headers, Host: "allowed.test" } }, INIT_BODY);
     expect(allowed.status).toBe(200);
     expect(allowed.headers["mcp-session-id"]).toBeDefined();
+
+    // host:port form is auto-expanded from the bare host, so a client sending the
+    // port (the common case for a non-default port) is also admitted (N17).
+    const withPort = await request(http, { ...base, headers: { ...headers, Host: `allowed.test:${coord.port}` } }, INIT_BODY);
+    expect(withPort.status).toBe(200);
+
+    // The GET /sse stream open is host-validated too, not just POST /message (N4).
+    const sseDenied = await request(http, { host: "127.0.0.1", port: coord.port, path: "/sse", method: "GET", headers: { Host: "evil.test" } });
+    expect(sseDenied.status).toBe(403);
+    const sseAllowed = await request(http, { host: "127.0.0.1", port: coord.port, path: "/sse", method: "GET", headers: { Host: "allowed.test" } });
+    expect(sseAllowed.status).toBe(200);
   }, 30000);
 
   it("coordinatorSseUrl scheme follows TLS config (sub-agent callback URL)", () => {
     const base = { host: "10.0.0.5", port: 3100 } as const;
     expect(coordinatorSseUrl({ ...base })).toBe("http://10.0.0.5:3100/sse");
     expect(coordinatorSseUrl({ ...base, tls: { certFile: "c", keyFile: "k", hsts: { enabled: true, maxAge: 1, includeSubDomains: false, preload: false } } })).toBe("https://10.0.0.5:3100/sse");
+  });
+
+  it("coordinatorSseUrl brackets IPv6 literals and honours advertisedHost", () => {
+    const v6 = coordinatorSseUrl({ host: "::1", port: 3100 });
+    expect(v6).toBe("http://[::1]:3100/sse");
+    expect(() => new URL(v6)).not.toThrow();
+    expect(coordinatorSseUrl({ host: "0.0.0.0", port: 3100, advertisedHost: "coord.example.dev" }))
+      .toBe("http://coord.example.dev:3100/sse");
+  });
+
+  it("config validation rejects hsts.preload without includeSubDomains / year-plus max-age", () => {
+    const dir = mkdtempSync(join(tmpdir(), "tls-hsts-"));
+    const cfgPath = join(dir, "mcp-config.json");
+    writeFileSync(cfgPath, JSON.stringify({
+      toolAllowlist: ["register_session"],
+      tls: { certFile: "c", keyFile: "k", hsts: { preload: true, includeSubDomains: false, maxAge: 31536000 } },
+    }));
+    try {
+      expect(() => loadConfig(cfgPath)).toThrow(/preload/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it("config validation rejects requireClientCert without caFile", () => {
