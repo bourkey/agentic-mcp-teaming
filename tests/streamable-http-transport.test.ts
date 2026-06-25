@@ -128,6 +128,31 @@ describe("Streamable HTTP transport (/mcp)", () => {
     await bogus.body?.cancel();
   }, 30000);
 
+  it("DELETE /mcp terminates the session (subsequent use is 404)", async () => {
+    coord = await startCoordinator();
+    const base = `http://127.0.0.1:${coord.port}/mcp`;
+    const headers = { "Content-Type": "application/json", Accept: "application/json, text/event-stream" };
+
+    const init = await fetch(base, {
+      method: "POST", headers,
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-03-26", capabilities: {}, clientInfo: { name: "raw", version: "0.0.0" } } }),
+    });
+    const sid = init.headers.get("mcp-session-id");
+    expect(sid).toBeTruthy();
+    await init.body?.cancel();
+
+    const del = await fetch(base, { method: "DELETE", headers: { "Mcp-Session-Id": sid! } });
+    expect(del.status).toBeLessThan(300);
+    await del.body?.cancel();
+
+    const after = await fetch(base, {
+      method: "POST", headers: { ...headers, "Mcp-Session-Id": sid! },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/list", params: {} }),
+    });
+    expect(after.status).toBe(404);
+    await after.body?.cancel();
+  }, 30000);
+
   it("malformed JSON to /mcp returns a JSON 400, not HTML (no SDK parse crash)", async () => {
     coord = await startCoordinator();
     const res = await fetch(`http://127.0.0.1:${coord.port}/mcp`, {

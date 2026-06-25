@@ -98,6 +98,11 @@ export function isLoopbackHost(host: string): boolean {
  * The SSE URL spawned sub-agents call back on. Scheme follows TLS config so a
  * sub-agent under an HTTPS coordinator is told `https://` (not a dead `http://`).
  * Single source of truth for every coordinatorUrl construction site.
+ *
+ * Sub-agents always use the SSE transport (`/sse`), regardless of which
+ * transport their parent client used — both transports are always served and
+ * SSE is the stable sub-agent channel. Threading the parent's transport kind
+ * through `invoke_agent` is a follow-up tied to eventual SSE deprecation.
  */
 export function coordinatorSseUrl(config: Pick<McpConfig, "host" | "port" | "tls" | "advertisedHost">): string {
   const scheme = config.tls !== undefined ? "https" : "http";
@@ -565,6 +570,9 @@ export async function startHttpServer(
     }
 
     if (sessionId === undefined && req.method === "POST" && isInitializeRequest(req.body)) {
+      // De-minimis race: two concurrent session-less initializes each create
+      // their own transport+server. Harmless in practice — a single client never
+      // sends concurrent initializes, and distinct clients get distinct sessions.
       const paneToken = extractPaneToken(req);
 
       const server = serverFactory(paneToken);

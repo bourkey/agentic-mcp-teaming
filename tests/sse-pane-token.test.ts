@@ -86,6 +86,22 @@ function postMessage(port: number, sessionId: string, body: string, extraHeaders
   });
 }
 
+function postMcpInitialize(port: number, extraHeaders: Record<string, string> = {}): Promise<number> {
+  const body = JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-03-26", capabilities: {}, clientInfo: { name: "t", version: "0.0.0" } } });
+  return new Promise((resolve, reject) => {
+    const req = http.request({
+      hostname: "127.0.0.1", port, path: "/mcp", method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "application/json, text/event-stream", "Content-Length": Buffer.byteLength(body, "utf8"), ...extraHeaders },
+    }, (res) => {
+      res.resume();
+      res.once("end", () => resolve(res.statusCode ?? 0));
+    });
+    req.once("error", reject);
+    req.write(body);
+    req.end();
+  });
+}
+
 let stopServer: (() => void) | null = null;
 
 afterEach(() => {
@@ -114,6 +130,24 @@ describe("startHttpServer: X-Pane-Token header threading", () => {
 
     expect(capturedTokens).toHaveLength(1);
     expect(capturedTokens[0]).toBe(token);
+  });
+
+  it("POST /mcp initialize with valid X-Pane-Token calls serverFactory with the trimmed token", async () => {
+    const port = await getFreePort();
+    const capturedTokens: Array<string | undefined> = [];
+
+    stopServer = await startHttpServer(
+      (paneToken) => {
+        capturedTokens.push(paneToken);
+        return new McpServer({ name: "test", version: "0.0.0" });
+      },
+      port
+    );
+
+    const token = "b".repeat(40);
+    const status = await postMcpInitialize(port, { "x-pane-token": token });
+    expect(status).toBe(200);
+    expect(capturedTokens).toEqual([token]);
   });
 
   it("3.3 GET /sse with token containing leading/trailing whitespace is trimmed before comparison", async () => {
