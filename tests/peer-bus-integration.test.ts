@@ -538,7 +538,7 @@ describe("peer-bus integration", () => {
 
   it("8.16 send_message does not block on notifier latency", async () => {
     // Simulate a hanging tmux subprocess via a never-calling mock
-    vi.mocked(execFile).mockImplementation(((_cmd: string, _args: unknown, _opts: unknown, _cb: unknown) => {
+    vi.mocked(execFile).mockImplementation((() => {
       // Never call the callback — simulates a hang
       return {} as ReturnType<typeof execFile>;
     }) as unknown as typeof execFile);

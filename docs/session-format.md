@@ -25,6 +25,7 @@ A single JSON object written atomically after every state change. Fields:
 | `revisionRounds` | `Record<string, number>` | How many revision rounds have occurred per artifact |
 | `taskAssignments` | `TaskAssignment[]` | Task-to-agent assignments produced during the task phase |
 | `implBranch` | string (optional) | Name of the Git session branch created for implementation |
+| `verification` | object (optional) | Trusted-driver repository identity and approved declaration digest for this session |
 | `taskWorktrees` | `Record<string, TaskWorktree>` | Per-task Git worktree metadata |
 | `checkpointPending` | boolean | `true` while the workflow is paused at a human checkpoint |
 | `spawnStats` | `{ activeCount: number, sessionTotal: number }` | Live spawn tracker counters; `activeCount` is the number of currently running agent invocations, `sessionTotal` is the all-time count for this session |
@@ -60,9 +61,18 @@ A single JSON object written atomically after every state change. Fields:
   "branch": "task/1-1",
   "worktreePath": "/abs/path/to/.worktrees/task-1-1",
   "baseCommit": "abc123",
+  "candidateCommit": "def456",
+  "candidateTree": "789abc",
+  "approvedDeclarationDigest": "0123...",
+  "gateResultDigest": "fedc...",
+  "gateVerdict": "pass",
+  "gateProvider": "container",
   "status": "implementing" | "reviewing" | "approved" | "integrated" | "failed"
 }
 ```
+
+Candidate and gate fields appear only after executed verification. They bind the merge decision to the
+exact reviewed tree and authenticated Steward result; they contain no credential or signing material.
 
 ### Example state.json
 

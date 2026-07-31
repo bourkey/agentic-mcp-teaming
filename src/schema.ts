@@ -79,11 +79,21 @@ export const SessionState = z.object({
   revisionRounds: z.record(z.string(), z.number().int().nonnegative()),
   taskAssignments: z.array(TaskAssignment),
   implBranch: z.string().optional(),
+  verification: z.object({
+    repository: z.string(),
+    approvedDeclarationDigest: z.string().regex(/^[0-9a-f]{40,64}$/),
+  }).optional(),
   taskWorktrees: z.record(z.string(), z.object({
     branch: z.string(),
     worktreePath: z.string(),
     baseCommit: z.string(),
     status: z.enum(["pending", "implementing", "reviewing", "approved", "integrated", "failed"]),
+    candidateCommit: z.string().regex(/^[0-9a-f]{40,64}$/).optional(),
+    candidateTree: z.string().regex(/^[0-9a-f]{40,64}$/).optional(),
+    approvedDeclarationDigest: z.string().regex(/^[0-9a-f]{40,64}$/).optional(),
+    gateResultDigest: z.string().regex(/^[0-9a-f]{64}$/).optional(),
+    gateVerdict: z.enum(["pass", "fail", "not-verifiable"]).optional(),
+    gateProvider: z.string().optional(),
   })),
   spawnStats: z.object({
     activeCount: z.number().int().nonnegative(),

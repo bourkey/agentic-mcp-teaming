@@ -1,23 +1,31 @@
-import { readFile } from "fs/promises";
-import { glob } from "fs/promises";
+import { readdir, readFile } from "fs/promises";
+import { join } from "path";
 import { PhaseContext, runArtifactConsensus, transitionPhase } from "./base.js";
+
+async function listMarkdownFiles(root: string, relativeDirectory = ""): Promise<string[]> {
+  const entries = await readdir(join(root, relativeDirectory), { withFileTypes: true });
+  const files: string[] = [];
+  for (const entry of entries) {
+    const relativePath = relativeDirectory === "" ? entry.name : `${relativeDirectory}/${entry.name}`;
+    if (entry.isDirectory()) {
+      files.push(...await listMarkdownFiles(root, relativePath));
+    } else if (entry.isFile() && entry.name.endsWith(".md")) {
+      files.push(relativePath);
+    }
+  }
+  return files;
+}
 
 export async function runSpecsPhase(
   ctx: PhaseContext,
   specsDir: string
 ): Promise<void> {
-  const specFiles: string[] = [];
-  for await (const f of (glob as (pattern: string, options: { cwd: string }) => AsyncIterable<string>)(
-    "**/*.md",
-    { cwd: specsDir }
-  )) {
-    specFiles.push(f);
-  }
+  const specFiles = await listMarkdownFiles(specsDir);
   specFiles.sort();
 
   for (const specFile of specFiles) {
     const artifactId = `spec:${specFile.replace(/\//g, ":")}`;
-    const content = await readFile(`${specsDir}/${specFile}`, "utf8");
+    const content = await readFile(join(specsDir, specFile), "utf8");
     const outcome = await runArtifactConsensus(ctx, artifactId, content);
     ctx.logger.log({ type: "spec_consensus", specFile, outcome, sessionId: ctx.session.get().sessionId });
     if (outcome === "aborted") throw new Error(`Spec phase aborted at ${specFile}.`);

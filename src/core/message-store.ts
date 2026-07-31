@@ -40,13 +40,14 @@ export class MessageStore {
     return this.path;
   }
 
-  async append(envelope: PeerMessage): Promise<void> {
+  append(envelope: PeerMessage): Promise<void> {
     if (this.fd === null) {
       this.fd = fs.openSync(this.path, "a");
     }
     const line = JSON.stringify(envelope) + "\n";
     fs.writeSync(this.fd, line);
     fs.fsyncSync(this.fd);
+    return Promise.resolve();
   }
 
   async loadAll(): Promise<Map<string, PeerMessage>> {

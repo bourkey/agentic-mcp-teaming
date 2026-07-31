@@ -9,7 +9,7 @@ import { HumanCheckpoint } from "../src/core/checkpoint.js";
 import { ConsensusLoop } from "../src/core/consensus.js";
 import { AgentRegistry } from "../src/core/registry.js";
 import { SpawnTracker } from "../src/core/spawn-tracker.js";
-import { makeMockAgentTool, type AgentToolsContext, type AgentInvokeFn } from "../src/server/tools/agents.js";
+import { type AgentToolsContext, type AgentInvokeFn } from "../src/server/tools/agents.js";
 import { submitForConsensusTool, advancePhaseTool, getSessionStateTool, resolveCheckpointTool, type WorkflowToolsContext } from "../src/server/tools/workflow.js";
 import { createCoordinatorServer, extractRequestToken, isAuthorizedRequest } from "../src/server/index.js";
 import { loadConfig } from "../src/config.js";

@@ -16,7 +16,7 @@ export class AuditLogger {
   }
 
   log(data: Omit<AuditEntry, "timestamp">): void {
-    // eslint-disable-next-line @typescript-eslint/consistent-type-assertions
+
     const entry = { timestamp: new Date().toISOString(), ...data } as AuditEntry;
     this.append(entry).catch((err) => {
       console.error("AuditLogger write failed:", err);

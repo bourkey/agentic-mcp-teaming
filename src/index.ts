@@ -14,6 +14,8 @@ import { HumanCheckpoint } from "./core/checkpoint.js";
 import { ConsensusLoop } from "./core/consensus.js";
 import { AgentRegistry } from "./core/registry.js";
 import { SpawnTracker } from "./core/spawn-tracker.js";
+import { StewardInterface } from "./core/steward-interface.js";
+import { StewardVerifier } from "./core/steward-verifier.js";
 import { consoleLogger } from "./core/logger.js";
 import { bootstrapPeerBus } from "./core/peer-bus-bootstrap.js";
 import { AgentToolsContext } from "./server/tools/agents.js";
@@ -167,6 +169,11 @@ async function main(): Promise<void> {
 
       const config = loadConfig(opts.config);
       config.rootDir = resolve(config.rootDir);
+      if (config.steward === undefined) {
+        throw new Error("Steward integration configuration is required for phase-driven workflows");
+      }
+      const stewardInterface = await StewardInterface.load(config.steward, config.rootDir);
+      const stewardVerifier = StewardVerifier.fromEnvironment(config.steward);
       if (!isLoopbackHost(config.host) && (!config.authTokenEnvVar || !process.env[config.authTokenEnvVar])) {
         console.error("Error: a transport auth token is required when binding the coordinator beyond loopback.");
         process.exit(1);
@@ -182,6 +189,12 @@ async function main(): Promise<void> {
       const session = opts.session
         ? await SessionManager.load(opts.sessionsDir, opts.session)
         : await SessionManager.create(opts.sessionsDir);
+      await session.update({
+        verification: {
+          repository: config.rootDir,
+          approvedDeclarationDigest: stewardVerifier.approvedDigest(),
+        },
+      });
 
       const { sessionId } = session.get();
       const logger = new AuditLogger(opts.sessionsDir, sessionId);
@@ -252,10 +265,16 @@ async function main(): Promise<void> {
       logger.log({ type: "session_start", sessionId, dryRun: !!opts.dryRun, startPhase: opts.workflow });
 
       try {
-        const specsDir = `${opts.openspecDir}/specs`;
-        const proposalPath = `${opts.openspecDir}/proposal.md`;
-        const designPath = `${opts.openspecDir}/design.md`;
-        const tasksPath = `${opts.openspecDir}/tasks.md`;
+        const artifactPath = (phase: "proposal" | "design" | "spec" | "task"): string => {
+          const artifact = stewardInterface.artifactForPhase(phase);
+          return artifact === "specs"
+            ? `${opts.openspecDir}/specs`
+            : `${opts.openspecDir}/${artifact}.md`;
+        };
+        const specsDir = artifactPath("spec");
+        const proposalPath = artifactPath("proposal");
+        const designPath = artifactPath("design");
+        const tasksPath = artifactPath("task");
 
         if (opts.workflow === "proposal" || session.get().currentPhase === "proposal") {
           await runProposalPhase(phaseCtx, proposalPath);
@@ -274,7 +293,12 @@ async function main(): Promise<void> {
             }
             await execFileAsync("git", ["checkout", "-b", sessionBranch], { cwd: config.rootDir });
             await session.update({ implBranch: sessionBranch });
-            const impl = new ImplementationPhase(phaseCtx, { repoRoot: config.rootDir, sessionBranch }, agentCtx);
+            const impl = new ImplementationPhase(
+              phaseCtx,
+              { repoRoot: config.rootDir, sessionBranch },
+              agentCtx,
+              { verifier: stewardVerifier }
+            );
             await impl.run(assignments);
           }
         }

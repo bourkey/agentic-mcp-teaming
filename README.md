@@ -41,7 +41,7 @@ git --version
 tmux --version    # optional but recommended for the "running the coordinator" section below
 
 # 2. Clone + build
-git clone https://github.com/bourkey/agentic-mcp-teaming.git
+git clone https://gitea.int.bourkey.dev/nicko/agentic-mcp-teaming.git
 cd agentic-mcp-teaming
 npm install
 npm run build
@@ -86,6 +86,15 @@ Edit `mcp-config.json` to configure the coordinator:
                     "submit_for_consensus", "advance_phase",
                     "get_session_state", "resolve_checkpoint"],
   "authTokenEnvVar": "COORDINATOR_AUTH_TOKEN",
+  "steward": {
+    "interfaceCommand": "orchestration-interface",
+    "providerCommand": "container-verification-provider",
+    "interfaceSchemaVersion": 1,
+    "resultSchemaVersion": 1,
+    "approvedDeclarationEnvVar": "STEWARD_APPROVED_DECLARATION",
+    "timeoutMs": 30000,
+    "providerTimeoutMs": 900000
+  },
   "agents": {
     "architect": {
       "cli": "claude",
@@ -135,6 +144,7 @@ Edit `mcp-config.json` to configure the coordinator:
 | `rootDir` | Filesystem root for shared tools — paths and symlink targets outside this directory are rejected |
 | `toolAllowlist` | Which MCP tools are exposed; remove a tool name to disable it. `bash` is opt-in and should stay disabled unless you explicitly need it |
 | `authTokenEnvVar` | Environment variable containing the MCP transport auth token; required when `host` is broader than loopback |
+| `steward` | Required for phase-driven workflows. Configures the versioned interface, hard-isolated provider, trusted-driver approval channel, and independent interface/provider timeouts. Executable names resolve through `PATH`; do not embed machine paths. |
 | `agents` | Named agent registry; each entry requires `cli` (the command to invoke) and optional capability flags (`canReview`, `canRevise`, `canImplement`, `allowSubInvocation`) and `specialty` description |
 | `consensus.maxRounds` | Maximum revision rounds before escalating to a human checkpoint (default: 3) |
 | `spawning.maxDepth` | Maximum agent call-tree depth; invocations deeper than this are rejected (default: 2) |

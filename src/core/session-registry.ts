@@ -508,7 +508,8 @@ export class SessionRegistry {
     const serialised: Record<string, Omit<SessionEntry, "wakeTarget">> = {};
     for (const [key, value] of this.sessions.entries()) {
       // wakeTarget is in-memory only — exclude from persisted JSON
-      const { wakeTarget: _wt, ...persisted } = value;
+      const { wakeTarget, ...persisted } = value;
+      void wakeTarget;
       serialised[key] = persisted;
     }
     const payload = { version: 1, sessions: serialised };

@@ -89,12 +89,14 @@ The coordinator distinguishes two terminal outcomes:
 - **`consensus-reached`** — both agents approved the same artifact revision.
 - **`human-approved`** — the human operator explicitly advanced the workflow after a deadlock, block, or revision cap.
 
-Both outcomes allow the workflow to advance via `advance_phase`, but the distinction is preserved in session state and the audit log. This keeps the audit trail truthful about how each artifact was resolved.
+Both outcomes allow non-code workflow decisions to advance via `advance_phase`, but neither represents
+executed verification. Any transition that lands code separately requires a Steward-authenticated
+container-verification `pass`; human approval cannot bypass a failed or unavailable gate.
 
 ## Workflow phases
 
 ```
-proposal → design → spec → task → implementation
+proposal → design → spec → task → implementation → review
 ```
 
 Consensus (or human approval) is required at each boundary. After the task phase, the coordinator assigns each task to a primary agent and a reviewing agent, then enters the implementation phase.
@@ -108,7 +110,24 @@ During the implementation phase, each task runs in its own Git worktree:
 3. The primary agent returns a unified diff patch and commit message.
 4. The coordinator applies the patch inside the worktree and commits it.
 5. The reviewing agent reviews the diff. If changes are requested, the coordinator resets the worktree, generates a revised patch, and re-reviews.
-6. After approval, the task branch is merged into the session branch sequentially.
-7. If the merge conflicts (session branch moved), the coordinator rebases the task branch onto the current session head in the worktree, regenerates the diff, and requires re-review before merge.
+6. After approval, the coordinator compares the reviewed task base with the current session head. A moved
+   session branch forces rebase and re-review before verification.
+7. The configured Steward container provider executes the exact candidate commit using the trusted
+   driver's approved declaration digest. The coordinator verifies commit/tree/declaration/provider
+   identity and submits the signed result to Steward's transition authorizer.
+8. Only an authenticated `pass` permits merge. A final session-head comparison closes the
+   verification-to-merge race; movement forces another rebase, review, and verification.
 
 This means no two tasks write to the same live checkout simultaneously — isolation is provided by the filesystem, not by locking.
+
+## Steward verification boundary
+
+The coordinator loads Steward's versioned OpenSpec interface and repository conformance check before
+invoking an agent. Executable names and supported schema versions come from `mcp-config.json`; machine
+paths are not embedded. The approved declaration digest arrives only through the configured
+`approvedDeclarationEnvVar`, set by the trusted Steward-side driver.
+
+The engine never executes certifying commands or authenticates its own verdict. It requests the
+`container-hard` provider, validates the returned immutable identities, and asks Steward to authorize the
+transition. Session state and audit events retain commit, tree, approved digest, result digest, provider,
+and verdict—but never the signing key, token, or raw command environment.

@@ -71,7 +71,7 @@ export class WakeDispatcher {
   }
 
   async maybeDispatch(input: DispatchWakeInput): Promise<void> {
-    const { registry, backend, logger, audit, allowedCommands, debounceMs } = this.opts;
+    const { registry, backend, logger, allowedCommands, debounceMs } = this.opts;
     const { target, messageId } = input;
 
     const entry = registry.get(target);
@@ -112,9 +112,10 @@ export class WakeDispatcher {
       return;
     }
 
-    const tookWindow = await registry.withLock(target, async () => {
-      return registry.tryConsumeWakeWindow(target, now, debounceMs);
-    });
+    const tookWindow = await registry.withLock(
+      target,
+      () => Promise.resolve(registry.tryConsumeWakeWindow(target, now, debounceMs))
+    );
 
     if (!tookWindow) {
       this.emitSuppressed(now, target, commandKey, messageId, "debounce");
