@@ -97,6 +97,12 @@ function nowIso(): string {
   return new Date().toISOString();
 }
 
+function registrationTimeAfter(previous: string): string {
+  const previousTime = Date.parse(previous);
+  const currentTime = Date.now();
+  return new Date(Number.isNaN(previousTime) ? currentTime : Math.max(currentTime, previousTime + 1)).toISOString();
+}
+
 export class SessionRegistry {
   private readonly sessions = new Map<string, SessionEntry>();
   private readonly wakeStates = new Map<string, WakeState>();
@@ -206,6 +212,8 @@ export class SessionRegistry {
     // Only store paneTokenHash when a real paneToken was supplied
     const newPaneTokenHash = paneToken !== undefined ? presentedHash.toString("hex") : undefined;
     const now = nowIso();
+    const freshRegistrationTime =
+      existing !== undefined && !preserveExisting ? registrationTimeAfter(existing.registeredAt) : now;
 
     // autoWakeKey semantics:
     //   undefined → preserve existing (on re-register) or leave unset (on fresh)
@@ -249,8 +257,8 @@ export class SessionRegistry {
             name,
             tokenHash,
             ...(newPaneTokenHash !== undefined ? { paneTokenHash: newPaneTokenHash } : {}),
-            registeredAt: now,
-            lastSeenAt: now,
+            registeredAt: freshRegistrationTime,
+            lastSeenAt: freshRegistrationTime,
             unreadMessageIds: [],
             ...(resolvedAutoWakeKey !== undefined ? { autoWakeKey: resolvedAutoWakeKey } : {}),
             ...(resolvedCmuxSurfaceId !== undefined ? { cmuxSurfaceId: resolvedCmuxSurfaceId } : {}),
