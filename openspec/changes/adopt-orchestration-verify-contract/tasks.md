@@ -41,4 +41,4 @@
 - [x] 6.2 Add integration tests for pass/fail/not-verifiable, stale-tree/declaration rejection, rebase invalidation, and human-override blocking.
 - [x] 6.3 Prove container limits including hard memory and denied egress; prove dependency preparation cannot certify.
 - [x] 6.4 Run `npm test`, `npm run build`, `npm run lint`, and strict OpenSpec validation.
-- [ ] 6.5 Update operator and architecture documentation, open the engine PR, link Steward #109/#94, and land only with required checks.
+- [x] 6.5 Update operator and architecture documentation, open the engine PR, link Steward #109/#94, and land only with required checks.
