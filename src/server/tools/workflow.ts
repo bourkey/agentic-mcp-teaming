@@ -9,15 +9,6 @@ export interface WorkflowToolsContext {
   consensus: ConsensusLoop;
 }
 
-const PHASE_ORDER: WorkflowPhase[] = [
-  "proposal",
-  "design",
-  "spec",
-  "task",
-  "implementation",
-  "review",
-];
-
 export async function submitForConsensusTool(
   ctx: WorkflowToolsContext,
   params: { artifactId: string; content: string }
@@ -52,8 +43,8 @@ export async function advancePhaseTool(
       `Cannot advance phase: artifact '${params.artifactId}' outcome is '${outcome ?? "pending"}', need consensus-reached or human-approved`
     );
   }
-  const currentIndex = PHASE_ORDER.indexOf(state.currentPhase);
-  const nextPhase = PHASE_ORDER[currentIndex + 1];
+  const currentIndex = WorkflowPhase.options.indexOf(state.currentPhase);
+  const nextPhase = WorkflowPhase.options[currentIndex + 1];
   if (!nextPhase) {
     throw new Error(`Already at final phase: ${state.currentPhase}`);
   }

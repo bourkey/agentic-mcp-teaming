@@ -4,10 +4,10 @@
 
 ## 1. OpenSpec Interface Adoption
 
-- [ ] 1.1 Add the supported `openspec/config.yaml` layout and record the required Steward interface schema/version.
-- [ ] 1.2 Add configuration for the Steward interface and verification executables without hardcoded machine paths.
-- [ ] 1.3 Load and validate the interface at startup; fail before agent invocation on missing, malformed, or drifted contracts.
-- [ ] 1.4 Replace hardcoded artifact/phase consumers with the validated Steward mapping and update UI/event consumers.
+- [x] 1.1 Add the supported `openspec/config.yaml` layout and record the required Steward interface schema/version.
+- [x] 1.2 Add configuration for the Steward interface and verification executables without hardcoded machine paths.
+- [x] 1.3 Load and validate the interface at startup; fail before agent invocation on missing, malformed, or drifted contracts.
+- [x] 1.4 Replace hardcoded artifact/phase consumers with the validated Steward mapping and update UI/event consumers.
 
 ## 2. Trusted Verification Inputs
 

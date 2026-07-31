@@ -17,6 +17,14 @@
     "read_messages"
   ],
   "authTokenEnvVar": "COORDINATOR_AUTH_TOKEN",
+  "steward": {
+    "interfaceCommand": "orchestration-interface",
+    "providerCommand": "container-verification-provider",
+    "interfaceSchemaVersion": 1,
+    "resultSchemaVersion": 1,
+    "approvedDeclarationEnvVar": "STEWARD_APPROVED_DECLARATION",
+    "timeoutMs": 30000
+  },
   "agents": {
     "architect": {
       "cli": "claude",

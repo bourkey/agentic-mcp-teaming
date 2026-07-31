@@ -106,6 +106,17 @@ const PeerBus = z.object({
   session: PeerBusSession.optional(),
 }).strict();
 
+const StewardIntegration = z.object({
+  interfaceCommand: z.string().min(1).default("orchestration-interface"),
+  providerCommand: z.string().min(1).default("container-verification-provider"),
+  interfaceSchemaVersion: z.number().int().positive().default(1),
+  resultSchemaVersion: z.number().int().positive().default(1),
+  approvedDeclarationEnvVar: z.string().regex(/^[A-Z][A-Z0-9_]*$/),
+  timeoutMs: z.number().int().positive().default(30_000),
+}).strict();
+
+export type StewardIntegrationConfig = z.infer<typeof StewardIntegration>;
+
 const TlsHsts = z
   .object({
     enabled: z.boolean().default(true),
@@ -177,6 +188,7 @@ const McpConfig = z.object({
     maxSessionInvocations: z.number().int().positive().default(50),
   }).default({}),
   peerBus: PeerBus.optional(),
+  steward: StewardIntegration.optional(),
 });
 
 export type PeerBusConfig = z.infer<typeof PeerBus>;

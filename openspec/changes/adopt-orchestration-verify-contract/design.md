@@ -54,12 +54,15 @@ transition-authorizer. It proceeds only on successful authenticator verification
 `fail`, `not-verifiable`, malformed/unsigned output, provider failure, timeout, and interface drift all
 block. Consensus or human override can resolve review disagreement but cannot change this result.
 
-### Use a containerized or CI provider for engine certification
+### Use Steward's container provider for engine certification
 
-The engine provider materializes the pinned tree into a disposable environment with read-only provenance,
-a writable build copy, scrubbed environment, default-deny egress, bounded output, and hard CPU, process,
-memory, filesystem, and wall-time limits. Dependency preparation is a distinct non-certifying operation;
-the certifying container starts offline with prepared lockfile-pinned inputs.
+Steward change `add-container-verification-provider` (#130, implementation commit `e2fc1e6`) supplies the
+configured `container-verification-provider` protocol. Steward materializes the pinned tree into a
+disposable environment with read-only provenance, a writable build copy, scrubbed environment,
+default-deny egress, bounded output, and hard CPU, process, memory, filesystem, and wall-time limits.
+The engine supplies immutable request identities and consumes the authenticated result; it does not
+materialize, execute, attest, or sign certification itself. V1 has no networked preparation operation:
+toolchains and offline dependencies are already present in the approved digest-pinned image or tree.
 
 Reusing the operator's harness sandbox was rejected because it exposes operator capabilities and cannot
 apply nested Seatbelt. Running directly on the engine host was rejected because it cannot attest hard
@@ -94,5 +97,5 @@ leaves work pending for operator handling.
 
 ## Open Questions
 
-- Which existing CI/container runtime will host the first hard-memory provider?
-- Where will the Steward-side driver persist per-repository approved declaration digests?
+None for provider selection. The configured Steward-side driver remains the source of approved declaration
+digests; the engine accepts that value only through the named trusted configuration channel.
