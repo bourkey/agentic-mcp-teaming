@@ -40,15 +40,27 @@ After the primary agent submits an implementation, the coordinator SHALL send th
 - **THEN** the coordinator SHALL send the feedback to the primary agent, require a revised full patch, reset the task worktree to the task base or latest approved replay point, apply the revised patch, regenerate the diff, and resubmit it for review; the standard revision cap of 3 rounds applies
 
 ### Requirement: Approved task changes are integrated through Git
-The coordinator SHALL integrate task changes into the session branch only after the reviewing agent approves the implementation. The coordinator SHALL use Git branch/worktree operations rather than direct multi-file writes into the shared working directory.
+The coordinator SHALL integrate task changes into the session branch only after the reviewing agent
+approves the implementation and Steward's transition authorizer authenticates an execution-verification
+`pass` bound to the exact candidate tree and approved declaration digest. The coordinator SHALL use Git
+branch/worktree operations rather than direct multi-file writes into the shared working directory.
 
-#### Scenario: Task branch integrated after approval
-- **WHEN** a task's implementation is approved
-- **THEN** the coordinator SHALL integrate the approved task branch into the session branch, record the resulting commit SHA, and log each changed file path and change type (created/modified/deleted) to the audit log
+#### Scenario: Task branch integrated after review and verification
+- **WHEN** a task's implementation is approved and its exact candidate tree receives an authenticated
+  execution-verification `pass`
+- **THEN** the coordinator SHALL integrate the task branch, record the resulting commit SHA and gate
+  evidence, and log each changed file path and change type to the audit log
+
+#### Scenario: Review passes but execution does not
+- **WHEN** review approves a task but verification fails, is not verifiable, is unauthenticated, or is
+  bound to a different tree/declaration
+- **THEN** the coordinator SHALL block integration and SHALL NOT treat human override as verification
 
 #### Scenario: Integration conflict or invalidated review
-- **WHEN** merge of an approved task branch fails because the session branch has moved, or the task must be replayed onto a newer session branch head
-- **THEN** the coordinator SHALL rebase the task branch onto the current session branch head inside the task worktree, regenerate the diff, and require re-review before merge; if the rebase conflicts, the coordinator SHALL pause integration, log the conflict, and require human resolution before the task can be accepted
+- **WHEN** merge of a reviewed and verified task branch fails because the session branch has moved, or
+  the task must be replayed onto a newer session branch head
+- **THEN** the coordinator SHALL rebase inside the task worktree, regenerate the diff, and require both
+  re-review and re-verification of the new candidate tree before merge; conflicts require human resolution
 
 ### Requirement: Concurrent implementation uses isolated worktrees
 When the coordinator runs multiple implementation tasks concurrently, each task SHALL be assigned its own Git worktree, and the coordinator SHALL track the base commit and declared file/module scope for each task.
