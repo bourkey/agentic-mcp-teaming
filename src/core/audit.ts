@@ -10,17 +10,22 @@ export interface AuditEntry {
 export class AuditLogger {
   private readonly logPath: string;
   private initialized = false;
+  private pendingWrite: Promise<void> = Promise.resolve();
 
   constructor(sessionsDir: string, sessionId: string) {
     this.logPath = join(sessionsDir, sessionId, "audit.log");
   }
 
   log(data: Omit<AuditEntry, "timestamp">): void {
-
     const entry = { timestamp: new Date().toISOString(), ...data } as AuditEntry;
-    this.append(entry).catch((err) => {
+    const write = this.pendingWrite.then(() => this.append(entry));
+    this.pendingWrite = write.catch((err: unknown) => {
       console.error("AuditLogger write failed:", err);
     });
+  }
+
+  flush(): Promise<void> {
+    return this.pendingWrite;
   }
 
   private async append(entry: AuditEntry): Promise<void> {

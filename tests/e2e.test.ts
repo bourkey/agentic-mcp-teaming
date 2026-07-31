@@ -59,6 +59,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  await logger.flush();
   await rm(tmpDir, { recursive: true, force: true });
 });
 
@@ -94,7 +95,7 @@ describe("E2E: full proposal → design consensus workflow (dry-run)", () => {
 describe("E2E: audit log completeness", () => {
   it("records an audit entry for every submit_for_consensus call", async () => {
     await submitForConsensusTool(wfCtx, { artifactId: "proposal", content: "test" });
-    await new Promise((r) => setTimeout(r, 50));
+    await logger.flush();
 
     const logPath = join(tmpDir, session.get().sessionId, "audit.log");
     const logContent = await readFile(logPath, "utf8");
