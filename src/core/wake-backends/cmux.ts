@@ -8,10 +8,6 @@ const execFileAsync = promisify(execFile);
 const CMUX_SURFACE_ID_REGEX = /^surface:\d+$/;
 const WAKE_CMUX_TIMEOUT_MS = 5000;
 
-export interface CmuxWakeBackendOptions {
-  /** No configuration needed for v1 — options reserved for future use. */
-}
-
 /**
  * cmux implementation of WakeBackend. Uses only `execFile` (never `exec`,
  * never `spawn { shell: true }`) with arguments passed as arrays.
@@ -33,14 +29,16 @@ export interface CmuxWakeBackendOptions {
  *   2. `cmux send-key-surface --surface <id> enter` — Enter key press
  */
 export class CmuxWakeBackend implements WakeBackend {
-  constructor(_opts: CmuxWakeBackendOptions = {}) {}
-
-  async isPaneStateSafe(_target: string): Promise<{
+  isPaneStateSafe(): Promise<{
     safe: boolean;
     currentCommand: string;
     suppressReason: "probe_disabled";
   }> {
-    return { safe: false, currentCommand: PROBE_DISABLED_SENTINEL, suppressReason: "probe_disabled" };
+    return Promise.resolve({
+      safe: false,
+      currentCommand: PROBE_DISABLED_SENTINEL,
+      suppressReason: "probe_disabled",
+    });
   }
 
   async sendKeys(target: string, resolvedCommand: string): Promise<void> {

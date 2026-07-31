@@ -38,7 +38,8 @@ describe("AgentMessage", () => {
   });
 
   it("rejects missing required fields", () => {
-    const { content: _content, ...incomplete } = validMessage;
+    const incomplete: Partial<typeof validMessage> = { ...validMessage };
+    delete incomplete.content;
     expect(() => AgentMessage.parse(incomplete)).toThrow();
   });
 });

@@ -42,7 +42,12 @@ const AUTO_WAKE_VALUE_MAX_BYTES = 512;
 // then auto-confirms), DEL, any non-ASCII-printable byte, and backslash.
 // The backslash rejection prevents cmux CLI from auto-unescaping \n/\t
 // sequences in allowlist values into actual newlines/tabs in the pane.
-const AUTO_WAKE_ILLEGAL_BYTE = /[\x00-\x1F\x5C\x7F]|[^\x20-\x7E]/;
+function hasIllegalAutoWakeByte(value: string): boolean {
+  return Array.from(value).some((character) => {
+    const codePoint = character.codePointAt(0);
+    return codePoint === undefined || codePoint < 0x20 || codePoint > 0x7e || codePoint === 0x5c;
+  });
+}
 
 const AllowedCommandsMap = z
   .record(z.string(), z.string())
@@ -64,7 +69,7 @@ const AllowedCommandsMap = z
         });
         continue;
       }
-      if (AUTO_WAKE_ILLEGAL_BYTE.test(value)) {
+      if (hasIllegalAutoWakeByte(value)) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
           path: [key],

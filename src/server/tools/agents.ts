@@ -207,7 +207,7 @@ export async function invokeAgentTool(
 }
 
 export function makeMockAgentTool(agentId: string, action: AgentMessage["action"] = "approve") {
-  return async (_ctx: AgentToolsContext, params: AgentInvokeParams): Promise<AgentMessage> => ({
+  return (_ctx: AgentToolsContext, params: AgentInvokeParams): Promise<AgentMessage> => Promise.resolve({
     version: "1",
     role: agentId,
     phase: "proposal",
@@ -223,6 +223,10 @@ export interface ReviewerFinding {
   severity: "critical" | "major" | "minor";
   proposedFix: string;
   location: string;
+}
+
+function stringField(value: unknown): string {
+  return typeof value === "string" ? value : "";
 }
 
 export interface ReviewerFindings {
@@ -303,10 +307,10 @@ ${artifactContent}`;
   const findings: ReviewerFinding[] = result.findings
     .filter((f): f is Record<string, unknown> => typeof f === "object" && f !== null)
     .map((f) => ({
-      finding: String(f["finding"] ?? ""),
+      finding: stringField(f["finding"]),
       severity: (["critical", "major", "minor"].includes(String(f["severity"])) ? f["severity"] : "minor") as ReviewerFinding["severity"],
-      proposedFix: String(f["proposedFix"] ?? ""),
-      location: String(f["location"] ?? ""),
+      proposedFix: stringField(f["proposedFix"]),
+      location: stringField(f["location"]),
     }))
     .filter((f) => f.finding.length > 0);
 

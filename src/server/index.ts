@@ -459,6 +459,7 @@ export async function startHttpServer(
   authToken?: string,
   security: HttpServerSecurityOptions = {}
 ): Promise<() => void> {
+  await Promise.resolve();
   const tls = security.tls;
   const tlsActive = tls !== undefined;
 
