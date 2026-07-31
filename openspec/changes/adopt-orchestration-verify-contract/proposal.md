@@ -43,5 +43,5 @@ contract; the engine must adopt them before Steward can drive it autonomously.
 - Consumes the contract introduced by Steward change `add-orchestration-verify-foundation` and tracked by
   `BourkeyDev/steward#94`.
 - This dependent change is tracked by
-  [BourkeyDev/steward#109](https://gitea.int.bourkey.dev/BourkeyDev/steward/issues/109) because this
-  GitHub-origin repository's Gitea mirror is read-only.
+  [BourkeyDev/steward#109](https://gitea.int.bourkey.dev/BourkeyDev/steward/issues/109). Gitea is the
+  authoritative repository; its push mirror publishes matching refs to the public GitHub repository.

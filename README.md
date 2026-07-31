@@ -41,7 +41,7 @@ git --version
 tmux --version    # optional but recommended for the "running the coordinator" section below
 
 # 2. Clone + build
-git clone https://github.com/bourkey/agentic-mcp-teaming.git
+git clone https://gitea.int.bourkey.dev/nicko/agentic-mcp-teaming.git
 cd agentic-mcp-teaming
 npm install
 npm run build

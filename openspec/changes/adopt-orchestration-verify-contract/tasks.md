@@ -1,6 +1,6 @@
 ## 0. Proposal Tracking
 
-- [x] 0.1 Create and link writable tracking issue `BourkeyDev/steward#109` for the read-only Gitea mirror.
+- [x] 0.1 Create and link tracking issue `BourkeyDev/steward#109` for the dependent engine change.
 
 ## 1. OpenSpec Interface Adoption
 
