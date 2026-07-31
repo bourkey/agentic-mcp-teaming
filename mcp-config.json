@@ -23,7 +23,8 @@
     "interfaceSchemaVersion": 1,
     "resultSchemaVersion": 1,
     "approvedDeclarationEnvVar": "STEWARD_APPROVED_DECLARATION",
-    "timeoutMs": 30000
+    "timeoutMs": 30000,
+    "providerTimeoutMs": 900000
   },
   "agents": {
     "architect": {

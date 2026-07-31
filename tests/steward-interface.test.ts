@@ -64,6 +64,7 @@ function config(interfaceCommand: string): StewardIntegrationConfig {
     resultSchemaVersion: 1,
     approvedDeclarationEnvVar: "STEWARD_APPROVED_DECLARATION",
     timeoutMs: 1000,
+    providerTimeoutMs: 2000,
   };
 }
 

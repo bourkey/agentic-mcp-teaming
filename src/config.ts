@@ -113,6 +113,7 @@ const StewardIntegration = z.object({
   resultSchemaVersion: z.number().int().positive().default(1),
   approvedDeclarationEnvVar: z.string().regex(/^[A-Z][A-Z0-9_]*$/),
   timeoutMs: z.number().int().positive().default(30_000),
+  providerTimeoutMs: z.number().int().positive().default(900_000),
 }).strict();
 
 export type StewardIntegrationConfig = z.infer<typeof StewardIntegration>;

@@ -57,7 +57,7 @@ export class StewardInterface {
     }
     if (declaration.schema_version !== config.interfaceSchemaVersion) {
       throw new Error(
-        `Steward interface schema ${declaration.schema_version} is unsupported; expected ${config.interfaceSchemaVersion}`
+        `Steward interface schema ${String(declaration.schema_version)} is unsupported; expected ${String(config.interfaceSchemaVersion)}`
       );
     }
     if (declaration.verification_provider_protocol.result_schema_version !== config.resultSchemaVersion) {

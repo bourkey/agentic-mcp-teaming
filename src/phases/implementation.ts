@@ -6,6 +6,7 @@ import { promisify } from "util";
 import { PhaseContext } from "./base.js";
 import { TaskAssignment, SessionState } from "../schema.js";
 import { AgentToolsContext, invokeAgentTool, type AgentInvokeFn } from "../server/tools/agents.js";
+import { StewardVerifier } from "../core/steward-verifier.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -18,6 +19,7 @@ interface GitContext {
 
 interface ImplementationPhaseOptions {
   invokeAgent?: AgentInvokeFn;
+  verifier: Pick<StewardVerifier, "verifyImplementation">;
 }
 
 interface GeneratedPatch {
@@ -106,14 +108,16 @@ async function writePatchFile(patch: string): Promise<{ patchPath: string; clean
 export class ImplementationPhase {
   private readonly maxReviewRounds = 3;
   private readonly invokeAgentFn: AgentInvokeFn;
+  private readonly verifier: Pick<StewardVerifier, "verifyImplementation">;
 
   constructor(
     private readonly ctx: PhaseContext,
     private readonly gitCtx: GitContext,
     private readonly agentCtx: AgentToolsContext,
-    options: ImplementationPhaseOptions = {}
+    options: ImplementationPhaseOptions
   ) {
     this.invokeAgentFn = options.invokeAgent ?? invokeAgentTool;
+    this.verifier = options.verifier;
   }
 
   async run(assignments: TaskAssignment[]): Promise<void> {
@@ -180,12 +184,68 @@ export class ImplementationPhase {
           continue;
         }
 
+        const reviewedSessionHead = await git(["rev-parse", sessionBranch], repoRoot);
+        const taskMergeBase = await git(["merge-base", branch, sessionBranch], repoRoot);
+        if (taskMergeBase !== reviewedSessionHead) {
+          await git(["rebase", sessionBranch], worktreePath);
+          reviewBase = sessionBranch;
+          diff = await getDiff(reviewBase, worktreePath);
+          generated = {
+            ...generated,
+            summary: `${generated.summary}\n\nReplayed onto the current ${sessionBranch} head and requires re-review before verification.`,
+          };
+          feedbackHistory = [];
+          this.ctx.logger.log({
+            type: "task_replayed_for_rereview",
+            taskId: task.taskId,
+            sessionBranch,
+            sessionHead: reviewedSessionHead,
+            sessionId: this.ctx.session.get().sessionId,
+          });
+          continue;
+        }
+
+        const candidateCommit = await getCurrentCommit(worktreePath);
+        const verification = await this.verifier.verifyImplementation(repoRoot, candidateCommit);
+        const existing = this.ctx.session.get().taskWorktrees[task.taskId];
+        if (existing === undefined) {
+          throw new Error(`Task ${task.taskId} lost its worktree state before verification`);
+        }
+        await this.ctx.session.update({
+          taskWorktrees: {
+            ...this.ctx.session.get().taskWorktrees,
+            [task.taskId]: {
+              ...existing,
+              candidateCommit: verification.candidateCommit,
+              candidateTree: verification.candidateTree,
+              approvedDeclarationDigest: verification.approvedDeclarationDigest,
+              gateResultDigest: verification.gateResultDigest,
+              gateVerdict: verification.gateVerdict,
+              gateProvider: verification.gateProvider,
+            },
+          },
+        });
+        this.ctx.logger.log({
+          type: "task_verification_passed",
+          taskId: task.taskId,
+          commit: verification.candidateCommit,
+          tree: verification.candidateTree,
+          approvedDeclarationDigest: verification.approvedDeclarationDigest,
+          resultDigest: verification.gateResultDigest,
+          provider: verification.gateProvider,
+          attestation: verification.attestation,
+          commandOutcomes: verification.commandOutcomes,
+          transitionDecision: "authorized",
+          sessionId: this.ctx.session.get().sessionId,
+        });
+
         const integration = await this.integrateTask(
           repoRoot,
           sessionBranch,
           branch,
           task.taskId,
-          worktreePath
+          worktreePath,
+          reviewedSessionHead
         );
 
         if (integration.status === "integrated") {
@@ -347,9 +407,14 @@ Approve if the implementation correctly addresses the task, request-changes with
     sessionBranch: string,
     taskBranch: string,
     taskId: string,
-    worktreePath: string
+    worktreePath: string,
+    verifiedSessionHead: string
   ): Promise<IntegrationOutcome> {
     try {
+      const currentSessionHead = await git(["rev-parse", sessionBranch], repoRoot);
+      if (currentSessionHead !== verifiedSessionHead) {
+        return { status: "replay-required" };
+      }
       await git(["checkout", sessionBranch], repoRoot);
       await git(["merge", "--no-ff", taskBranch, "-m", `Integrate task ${taskId}`], repoRoot);
       return { status: "integrated" };
