@@ -17,6 +17,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  await logger.flush();
   await rm(tmpDir, { recursive: true, force: true });
 });
 
